@@ -18,7 +18,9 @@ package types
 
 import (
 	"bytes"
+	"fmt"
 	"math/big"
+	"strconv"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -56,6 +58,145 @@ func (acct *StateAccount) Copy() *StateAccount {
 		Root:     acct.Root,
 		CodeHash: common.CopyBytes(acct.CodeHash),
 	}
+}
+
+func (acct *StateAccount) Print() {
+	fmt.Println("  Nonce:", acct.Nonce)
+	fmt.Println("  Balance:", acct.Balance)
+	fmt.Println("  Root:", acct.Root.Hex())
+	fmt.Println("  CodeHash:", common.Bytes2Hex(acct.CodeHash))
+}
+
+func (acct *StateAccount) ToString() string {
+	str := ""
+	str += "  Nonce: " + strconv.FormatUint(acct.Nonce, 10) + "\n"
+	if acct.Balance != nil {
+		str += "  Balance: " + strconv.FormatUint(acct.Balance.Uint64(), 10) + "\n"
+	} else {
+		str += "  Balance: nil\n"
+	}
+	str += "  Root: " + acct.Root.Hex() + "\n"
+	str += "  CodeHash: " + common.Bytes2Hex(acct.CodeHash) + "\n"
+
+	return str
+}
+
+func (acct *StateAccount) Equal(compAcct *StateAccount) bool {
+	if acct.Nonce != compAcct.Nonce {
+		return false
+	}
+	if acct.Balance.Cmp(compAcct.Balance) != 0 {
+		return false
+	}
+	if acct.Root != compAcct.Root {
+		return false
+	}
+	if !bytes.Equal(acct.CodeHash, compAcct.CodeHash) {
+		return false
+	}
+	return true
+}
+
+// EthanetateAccount is the Ethane consensus representation of accounts. (jmlee)
+// These objects are stored in the main account trie.
+type EthaneStateAccount struct {
+	Nonce    uint64
+	Balance  *big.Int
+	Root     common.Hash // merkle root of the storage trie
+	CodeHash []byte
+	Addr     common.Address // address of this account
+}
+
+func (acct *EthaneStateAccount) Print() {
+	fmt.Println("  Nonce:", acct.Nonce)
+	fmt.Println("  Balance:", acct.Balance)
+	fmt.Println("  Root:", acct.Root.Hex())
+	fmt.Println("  CodeHash:", common.Bytes2Hex(acct.CodeHash))
+	fmt.Println("  Addr:", acct.Addr)
+}
+
+func (acct *EthaneStateAccount) ToString() string {
+	str := ""
+	str += "  Nonce: " + strconv.FormatUint(acct.Nonce, 10) + "\n"
+	if acct.Balance != nil {
+		str += "  Balance: " + strconv.FormatUint(acct.Balance.Uint64(), 10) + "\n"
+	} else {
+		str += "  Balance: nil\n"
+	}
+	str += "  Root: " + acct.Root.Hex() + "\n"
+	str += "  CodeHash: " + common.Bytes2Hex(acct.CodeHash) + "\n"
+	str += "  Addr: " + acct.Addr.Hex() + "\n"
+
+	return str
+}
+
+func (acct *EthaneStateAccount) Equal(compAcct *StateAccount) bool {
+	if acct.Nonce != compAcct.Nonce {
+		return false
+	}
+	if acct.Balance.Cmp(compAcct.Balance) != 0 {
+		return false
+	}
+	if acct.Root != compAcct.Root {
+		return false
+	}
+	if !bytes.Equal(acct.CodeHash, compAcct.CodeHash) {
+		return false
+	}
+	return true
+}
+
+// EthanostateAccount is the Ethanos consensus representation of accounts. (jmlee)
+// These objects are stored in the main account trie.
+type EthanosStateAccount struct {
+	Nonce    uint64
+	Balance  *big.Int
+	Root     common.Hash // merkle root of the storage trie
+	CodeHash []byte
+	Restored bool // flag whether this account is restored or not (default: false)
+}
+
+func (acct *EthanosStateAccount) Print() {
+	fmt.Println("  Nonce:", acct.Nonce)
+	fmt.Println("  Balance:", acct.Balance)
+	fmt.Println("  Root:", acct.Root.Hex())
+	fmt.Println("  CodeHash:", common.Bytes2Hex(acct.CodeHash))
+	fmt.Println("  Restored:", acct.Restored)
+}
+
+func (acct *EthanosStateAccount) ToString() string {
+	str := ""
+	str += "  Nonce: " + strconv.FormatUint(acct.Nonce, 10) + "\n"
+	if acct.Balance != nil {
+		str += "  Balance: " + strconv.FormatUint(acct.Balance.Uint64(), 10) + "\n"
+	} else {
+		str += "  Balance: nil\n"
+	}
+	str += "  Root: " + acct.Root.Hex() + "\n"
+	str += "  CodeHash: " + common.Bytes2Hex(acct.CodeHash) + "\n"
+	if acct.Restored {
+		str += "  Restored: true\n"
+	} else {
+		str += "  Restored: false\n"
+	}
+
+	return str
+}
+
+func (acct *EthanosStateAccount) Equal(compAcct *StateAccount) bool {
+	if acct.Nonce != compAcct.Nonce {
+		return false
+	}
+	if acct.Balance.Cmp(compAcct.Balance) != 0 {
+		return false
+	}
+	if acct.Root != compAcct.Root {
+		return false
+	}
+	if !bytes.Equal(acct.CodeHash, compAcct.CodeHash) {
+		return false
+	}
+	return true
 }
 
 // SlimAccount is a modified version of an Account, where the root is replaced

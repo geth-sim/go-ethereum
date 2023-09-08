@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -104,6 +105,25 @@ type odrTrie struct {
 	db   *odrDatabase
 	id   *TrieID
 	trie *trie.Trie
+}
+
+// meaningless function to conform to the Trie interface (jmlee)
+func (t *odrTrie) Get(key []byte) ([]byte, error) {
+	panic("not implemented")
+}
+
+// meaningless function to conform to the Trie interface (jmlee)
+func (t *odrTrie) Update(key, value []byte) error {
+	panic("not implemented")
+}
+
+// meaningless function to conform to the Trie interface (jmlee)
+func (t *odrTrie) TryDeleteLeft(endKey []byte) (error, []byte) {
+	panic("not implemented")
+}
+
+func (t *odrTrie) GetLastKey() *big.Int {
+	panic("not implemented")
 }
 
 func (t *odrTrie) GetStorage(_ common.Address, key []byte) ([]byte, error) {

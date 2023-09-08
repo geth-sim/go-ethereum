@@ -18,10 +18,14 @@
 package state
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/big"
+	"math/rand"
+	"os"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -69,6 +73,7 @@ type StateDB struct {
 	db         Database
 	prefetcher *triePrefetcher
 	trie       Trie
+	subTrie    Trie // cached trie for Ethanos, inactive trie for Ethane (jmlee)
 	hasher     crypto.KeccakState
 	snaps      *snapshot.Tree    // Nil if snapshot is not available
 	snap       snapshot.Snapshot // Nil if snapshot is not available
@@ -125,6 +130,7 @@ type StateDB struct {
 	nextRevisionId int
 
 	// Measurements gathered during execution for debugging purposes
+	AccountReadNum       int // how many account read occurs (jmlee)
 	AccountReads         time.Duration
 	AccountHashes        time.Duration
 	AccountUpdates       time.Duration
@@ -142,6 +148,31 @@ type StateDB struct {
 	StorageUpdated int
 	AccountDeleted int
 	StorageDeleted int
+
+	//
+	// metrics for Ethanos
+	//
+	CachedAccountReads   time.Duration // time to read accounts from Ethanos's cached trie (jmlee)
+	CachedAccountReadNum int
+
+	//
+	// metrics for Ethane
+	//
+	VoidAccountReadNum int
+	VoidAccountReads   time.Duration
+	DeleteNum          int
+	DeleteUpdates      time.Duration
+	DeleteHashes       time.Duration
+	InactivateNum      int
+	InactivateUpdates  time.Duration
+	InactivateHashes   time.Duration
+	UsedProofNum       int
+	UsedProofUpdtaes   time.Duration
+	// Ethane's additional index
+	ActiveIndexReads     time.Duration // time to read K_A
+	ActiveIndexReadNum   int           // # of read K_A
+	InactiveIndexReads   time.Duration // time to read K_I
+	InactiveIndexReadNum int           // # of read K_I
 }
 
 // New creates a new state from a given trie.
@@ -173,6 +204,24 @@ func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) 
 	if sdb.snaps != nil {
 		sdb.snap = sdb.snaps.Snapshot(root)
 	}
+
+	// open sub trie (jmlee)
+	if common.SimulationMode == common.EthanosMode {
+		// open cached trie for Ethanos
+		sdb.subTrie, err = db.OpenTrie(common.CachedTrieRoot)
+		if err != nil {
+			fmt.Println("at statedb.New() err when opening cached trie for Ethanos: ", err)
+			return nil, err
+		}
+	} else if common.SimulationMode == common.EthaneMode {
+		// open inactive trie for Ethane
+		sdb.subTrie, err = db.OpenTrie(common.InactiveTrieRoot)
+		if err != nil {
+			fmt.Println("at statedb.New() err when opening inactive trie for Ethane: ", err)
+			return nil, err
+		}
+	}
+
 	return sdb, nil
 }
 
@@ -541,11 +590,73 @@ func (s *StateDB) updateStateObject(obj *stateObject) {
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountUpdates += time.Since(start) }(time.Now())
 	}
+
 	// Encode the account and update the account trie
 	addr := obj.Address()
-	if err := s.trie.UpdateAccount(addr, &obj.data); err != nil {
-		s.setError(fmt.Errorf("updateStateObject (%x) error: %v", addr[:], err))
+	if common.SimulationMode == common.EthereumMode {
+		if err := s.trie.UpdateAccount(addr, &obj.data); err != nil {
+			s.setError(fmt.Errorf("updateStateObject (%x) error: %v", addr[:], err))
+		}
+	} else if common.SimulationMode == common.EthaneMode {
+		if obj.newAddrKey == common.ZeroHash {
+			// add original addrKey to D_A to delete previous account later
+			if obj.originAddrKey != common.ZeroHash {
+				common.KeysToDelete = append(common.KeysToDelete, obj.originAddrKey)
+			}
+
+			// alloc new addrKey
+			addrKey := common.HexToHash(strconv.FormatUint(common.NextKey, 16))
+			common.NextKey++
+			obj.newAddrKey = addrKey
+
+			// update K_A
+			common.AddrToKeyActive[addr] = addrKey
+		}
+
+		// encode Ethane's account
+		obj.ethaneData.Balance = obj.data.Balance // copy's overhead is not big
+		obj.ethaneData.CodeHash = obj.data.CodeHash
+		obj.ethaneData.Nonce = obj.data.Nonce
+		obj.ethaneData.Root = obj.data.Root
+		obj.ethaneData.Addr = obj.address
+		data, err := rlp.EncodeToBytes(&obj.ethaneData) // put pointer, not instance (for performance)
+		if err != nil {
+			fmt.Println("encoding err:", err)
+			os.Exit(1)
+		}
+
+		// update account trie
+		// fmt.Println("at updateStateObject() -> addr:", addr, " / newAddrKey:", obj.newAddrKey.Big())
+		if err := s.trie.Update(obj.newAddrKey[:], data); err != nil {
+			s.setError(fmt.Errorf("updateStateObject (%x) error: %v", addr[:], err))
+			fmt.Println("at updateStateObject() -> s.trie.Update() err:", err)
+			os.Exit(1)
+		}
+	} else if common.SimulationMode == common.EthanosMode {
+		// encode Ethanos's account
+		obj.ethanosData.Balance = obj.data.Balance // copy's overhead is not big
+		obj.ethanosData.CodeHash = obj.data.CodeHash
+		obj.ethanosData.Nonce = obj.data.Nonce
+		obj.ethanosData.Root = obj.data.Root
+		obj.ethanosData.Restored = obj.restored
+		data, err := rlp.EncodeToBytes(&obj.ethanosData) // put pointer, not instance (for performance)
+		if err != nil {
+			fmt.Println("encoding err:", err)
+			os.Exit(1)
+		}
+
+		// update account trie
+		if err := s.trie.Update(obj.addrHash[:], data); err != nil {
+			s.setError(fmt.Errorf("updateStateObject (%x) error: %v", addr[:], err))
+			fmt.Println("at updateStateObject() -> s.trie.Update() err:", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Println("this must not happen")
+		fmt.Println("at updateStateObject() -> wrong mode:", common.SimulationMode)
+		os.Exit(1)
 	}
+
 	if obj.dirtyCode {
 		s.trie.UpdateContractCode(obj.Address(), common.BytesToHash(obj.CodeHash()), obj.code)
 	}
@@ -569,14 +680,38 @@ func (s *StateDB) updateStateObject(obj *stateObject) {
 
 // deleteStateObject removes the given object from the state trie.
 func (s *StateDB) deleteStateObject(obj *stateObject) {
+
+	// Ethanos does not delete CA, but just set invalid Root value (jmlee)
+	if common.SimulationMode == common.EthanosMode && !bytes.Equal(obj.data.CodeHash, types.EmptyCodeHash.Bytes()) {
+		obj.data.Root = common.DeletedContractRoot
+		s.updateStateObject(obj)
+		return
+	}
+
 	// Track the amount of time wasted on deleting the account from the trie
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountUpdates += time.Since(start) }(time.Now())
 	}
 	// Delete the account from the trie
 	addr := obj.Address()
-	if err := s.trie.DeleteAccount(addr); err != nil {
-		s.setError(fmt.Errorf("deleteStateObject (%x) error: %v", addr[:], err))
+	if common.SimulationMode == common.EthaneMode {
+		addrKey, exist := common.AddrToKeyActive[addr]
+		if !exist {
+			// ex. at block 1456895, a contract is created and immediately deleted
+			// then it is not written in active trie yet, but try to delete
+			fmt.Println("at deleteStateObject() -> try to delete non-exist account, but this is not an error")
+			fmt.Println("  addr:", addr)
+			fmt.Println("  addrKey:", addrKey)
+			return
+		}
+		if err := s.trie.Update(addrKey[:], nil); err != nil {
+			s.setError(fmt.Errorf("deleteStateObject (%x) error: %v", addr[:], err))
+		}
+		delete(common.AddrToKeyActive, addr)
+	} else {
+		if err := s.trie.DeleteAccount(addr); err != nil {
+			s.setError(fmt.Errorf("deleteStateObject (%x) error: %v", addr[:], err))
+		}
 	}
 }
 
@@ -599,6 +734,14 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	if obj := s.stateObjects[addr]; obj != nil {
 		return obj
 	}
+
+	// get state object following each protocol (jmlee)
+	if common.SimulationMode == common.EthaneMode {
+		return s.getDeletedStateObjectEthane(addr)
+	} else if common.SimulationMode == common.EthanosMode {
+		return s.getDeletedStateObjectEthanos(addr)
+	}
+
 	// If no live objects are available, attempt to use snapshots
 	var data *types.StateAccount
 	if s.snap != nil {
@@ -643,6 +786,203 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	}
 	// Insert into the live set
 	obj := newObject(s, addr, data)
+	s.setStateObject(obj)
+	return obj
+}
+
+// Ethanos's getDeletedStateObject function (jmlee)
+func (s *StateDB) getDeletedStateObjectEthanos(addr common.Address) *stateObject {
+
+	// If no live objects are available, attempt to use snapshots
+	var data *types.EthanosStateAccount
+	accData := new(types.StateAccount)
+	// TODO(jmlee): implement for snapshot
+	// if s.snap != nil {
+	// 	start := time.Now()
+	// 	acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
+	// 	if metrics.EnabledExpensive {
+	// 		s.SnapshotAccountReads += time.Since(start)
+	// 	}
+	// 	if err == nil {
+	// 		if acc == nil {
+	// 			return nil
+	// 		}
+	// 		data = &types.StateAccount{
+	// 			Nonce:    acc.Nonce,
+	// 			Balance:  acc.Balance,
+	// 			CodeHash: acc.CodeHash,
+	// 			Root:     common.BytesToHash(acc.Root),
+	// 		}
+	// 		if len(data.CodeHash) == 0 {
+	// 			data.CodeHash = types.EmptyCodeHash.Bytes()
+	// 		}
+	// 		if data.Root == (common.Hash{}) {
+	// 			data.Root = types.EmptyRootHash
+	// 		}
+	// 	}
+	// }
+
+	// If snapshot unavailable or reading from it failed, load from the database
+	if data == nil {
+		start1 := time.Now()
+		// data, err = s.trie.GetAccount(addr)
+
+		var err2, err3, err4 error
+
+		// try to get account from current trie
+		addrHash := crypto.Keccak256Hash(addr[:])
+		enc, err1 := s.trie.Get(addrHash[:])
+		if len(enc) != 0 && err1 == nil {
+			data = new(types.EthanosStateAccount)
+			err2 = rlp.DecodeBytes(enc, data)
+		}
+		if metrics.EnabledExpensive {
+			s.AccountReads += time.Since(start1)
+			s.AccountReadNum++
+		}
+
+		if data == nil {
+			// if there is no such account in current trie,
+			// try to get account from cached trie
+			start2 := time.Now()
+			enc, err3 = s.subTrie.Get(addrHash[:])
+			if len(enc) != 0 && err3 == nil {
+				data = new(types.EthanosStateAccount)
+				err4 = rlp.DecodeBytes(enc, data)
+			}
+			if metrics.EnabledExpensive {
+				cachedAccountRead := time.Since(start2)
+				s.CachedAccountReadNum++
+				s.CachedAccountReads += cachedAccountRead
+				s.AccountReads += cachedAccountRead
+			}
+
+			if err3 != nil || err4 != nil {
+				s.setError(fmt.Errorf("getDeleteStateObject (%x) error: %w %w %w %w", addr.Bytes(), err1, err2, err3, err4))
+				return nil
+			}
+			if data == nil {
+				return nil
+			}
+		}
+
+		if data.Root == common.DeletedContractRoot {
+			// Ethanos does not delete CA, but just set invalid Root value
+			// this account is deleted account, so ignore it
+			return nil
+		}
+
+		accData.Balance = data.Balance
+		accData.CodeHash = data.CodeHash
+		accData.Nonce = data.Nonce
+		accData.Root = data.Root
+	}
+
+	// Insert into the live set
+	obj := newObject(s, addr, accData)
+	obj.restored = data.Restored
+	s.setStateObject(obj)
+	return obj
+}
+
+// Ethane's getDeletedStateObject function (jmlee)
+func (s *StateDB) getDeletedStateObjectEthane(addr common.Address) *stateObject {
+
+	// If no live objects are available, attempt to use snapshots
+	var data *types.EthaneStateAccount
+	accData := new(types.StateAccount)
+	// TODO(jmlee): implement for snapshot
+	// if s.snap != nil {
+	// 	start := time.Now()
+	// 	acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
+	// 	if metrics.EnabledExpensive {
+	// 		s.SnapshotAccountReads += time.Since(start)
+	// 	}
+	// 	if err == nil {
+	// 		if acc == nil {
+	// 			return nil
+	// 		}
+	// 		data = &types.StateAccount{
+	// 			Nonce:    acc.Nonce,
+	// 			Balance:  acc.Balance,
+	// 			CodeHash: acc.CodeHash,
+	// 			Root:     common.BytesToHash(acc.Root),
+	// 		}
+	// 		if len(data.CodeHash) == 0 {
+	// 			data.CodeHash = types.EmptyCodeHash.Bytes()
+	// 		}
+	// 		if data.Root == (common.Hash{}) {
+	// 			data.Root = types.EmptyRootHash
+	// 		}
+	// 	}
+	// }
+
+	// code for debugging, delete this later
+	if addrKeys, exist := common.AddrToKeyInactive[addr]; exist {
+		fmt.Println("ERROR: try to get inactive account, but it is not restored")
+		fmt.Println("  addr:", addr)
+		fmt.Println("  active addr key:", common.AddrToKeyActive[addr])
+		fmt.Println("  inactive addr keys:", addrKeys)
+		fmt.Println("  txHash:", s.thash.Hex())
+		fmt.Println("  txIndex:", s.txIndex)
+		os.Exit(1)
+	}
+
+	// If snapshot unavailable or reading from it failed, load from the database
+	var addrKey common.Hash
+	var exist bool
+	if data == nil {
+		start1 := time.Now()
+		addrKey, exist = common.AddrToKeyActive[addr]
+		if metrics.EnabledExpensive {
+			s.ActiveIndexReads += time.Since(start1)
+			s.ActiveIndexReadNum++
+		}
+		if exist {
+			// this address exists in active trie
+			start2 := time.Now()
+			var err2 error
+			enc, err1 := s.trie.Get(addrKey[:])
+			if len(enc) != 0 && err1 == nil {
+				data = new(types.EthaneStateAccount)
+				err2 = rlp.DecodeBytes(enc, data)
+			}
+			if metrics.EnabledExpensive {
+				s.AccountReads += time.Since(start2)
+				s.AccountReadNum++
+			}
+			if err1 != nil || err2 != nil {
+				s.setError(fmt.Errorf("getDeleteStateObject (%x) error: %w %w", addr.Bytes(), err1, err2))
+				return nil
+			}
+			if data == nil {
+				return nil
+			}
+		} else {
+			// this address does not exist in active trie
+			//
+			// TODO(jmlee): add random read for fair comparison? AddrToKeyActive looks like snapshot
+			//
+			start := time.Now()
+			randomNumber := uint64(rand.Int63n(int64(common.NextKey)))
+			randomAddrKey := common.HexToHash(strconv.FormatUint(randomNumber, 16))
+			s.trie.Get(randomAddrKey[:])
+			if metrics.EnabledExpensive {
+				s.VoidAccountReads += time.Since(start)
+				s.VoidAccountReadNum++
+			}
+
+			return nil
+		}
+
+		accData.Balance = data.Balance
+		accData.CodeHash = data.CodeHash
+		accData.Nonce = data.Nonce
+		accData.Root = data.Root
+	}
+	// Insert into the live set
+	obj := newObject(s, addr, accData)
+	obj.originAddrKey = addrKey
 	s.setStateObject(obj)
 	return obj
 }
@@ -694,6 +1034,11 @@ func (s *StateDB) createObject(addr common.Address) (newobj, prev *stateObject) 
 		delete(s.storages, prev.addrHash)
 		delete(s.accountsOrigin, prev.address)
 		delete(s.storagesOrigin, prev.address)
+
+		// set original position for Ethane (jmlee)
+		if common.SimulationMode == common.EthaneMode {
+			newobj.originAddrKey = prev.originAddrKey
+		}
 	}
 
 	newobj.created = true
@@ -983,16 +1328,41 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		}
 	}
 	usedAddrs := make([][]byte, 0, len(s.stateObjectsPending))
-	for addr := range s.stateObjectsPending {
-		if obj := s.stateObjects[addr]; obj.deleted {
-			s.deleteStateObject(obj)
-			s.AccountDeleted += 1
-		} else {
-			s.updateStateObject(obj)
-			s.AccountUpdated += 1
+	if common.SimulationMode == common.EthaneMode {
+		// TODO(jmlee): think better way for determinism
+		// sort pending addresses (for deterministic, since golang's map iteration is not ordered)
+		var addrs []string
+		for addr := range s.stateObjectsPending {
+			addrs = append(addrs, addr.Hex())
 		}
-		usedAddrs = append(usedAddrs, common.CopyBytes(addr[:])) // Copy needed for closure
+		sort.Strings(addrs)
+
+		for _, addrStr := range addrs {
+			addr := common.HexToAddress(addrStr)
+			if obj := s.stateObjects[addr]; obj.deleted {
+				s.deleteStateObject(obj)
+				s.AccountDeleted += 1
+			} else {
+				s.updateStateObject(obj)
+				s.AccountUpdated += 1
+			}
+			usedAddrs = append(usedAddrs, common.CopyBytes(addr[:])) // Copy needed for closure
+		}
+	} else {
+		// original code
+		// (Ethereum and Ethanos do not need to care about operation order since result is same)
+		for addr := range s.stateObjectsPending {
+			if obj := s.stateObjects[addr]; obj.deleted {
+				s.deleteStateObject(obj)
+				s.AccountDeleted += 1
+			} else {
+				s.updateStateObject(obj)
+				s.AccountUpdated += 1
+			}
+			usedAddrs = append(usedAddrs, common.CopyBytes(addr[:])) // Copy needed for closure
+		}
 	}
+
 	if prefetcher != nil {
 		prefetcher.used(common.Hash{}, s.originalRoot, usedAddrs)
 	}
@@ -1243,6 +1613,13 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		accountTrieDeletedMeter.Mark(int64(accountTrieNodesDeleted))
 		storageTriesUpdatedMeter.Mark(int64(storageTrieNodesUpdated))
 		storageTriesDeletedMeter.Mark(int64(storageTrieNodesDeleted))
+
+		// temply save metrics before reset them (jmlee)
+		common.AccountUpdated = s.AccountUpdated
+		common.StorageUpdated = s.StorageUpdated
+		common.AccountDeleted = s.AccountDeleted
+		common.StorageDeleted = s.StorageDeleted
+
 		s.AccountUpdated, s.AccountDeleted = 0, 0
 		s.StorageUpdated, s.StorageDeleted = 0, 0
 	}
@@ -1403,4 +1780,245 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 		}
 	}
 	return copied
+}
+
+// delete all previous accounts in active trie for Ethane (jmlee)
+func (s *StateDB) DeletePreviousAccounts() {
+
+	start := time.Now()
+	for _, key := range common.KeysToDelete {
+		if err := s.trie.Update(key[:], nil); err != nil {
+			s.setError(fmt.Errorf("updateStateObject (%x) error: %v", key[:], err))
+			fmt.Println("at DeletePreviousAccounts() -> s.trie.Update() err:", err)
+			os.Exit(1)
+		}
+	}
+	if metrics.EnabledExpensive {
+		s.DeleteUpdates += time.Since(start)
+		s.DeleteNum += len(common.KeysToDelete)
+	}
+
+	start = time.Now()
+	s.trie.Hash()
+	if metrics.EnabledExpensive {
+		s.DeleteHashes += time.Since(start)
+	}
+
+	fmt.Println("DeletePreviousAccounts() -> deleted accounts num:", len(common.KeysToDelete))
+	common.KeysToDelete = make([]common.Hash, 0)
+}
+
+// inactivates all old accounts in active trie for Ethane (jmlee)
+// also removes restored inactive accounts
+// returns disk commit time and last used inactive key
+func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.Hash) (time.Duration, uint64) {
+	//
+	// inactivate old accounts
+	//
+
+	originalInactiveRoot := common.InactiveTrieRoot
+	inactiveNextKey := s.subTrie.GetLastKey().Uint64() + 1
+	inactivatedAccNum := 0
+	for {
+		// try to delete the leftmost account (whose key should be less than last key to check)
+		start := time.Now()
+		err, enc := s.trie.TryDeleteLeft(lastKeyToCheck[:])
+		if enc != nil {
+			// success delete, then move the account to inactive trie
+			// insert inactive account to right
+			keyToInsert := common.HexToHash(strconv.FormatUint(inactiveNextKey, 16))
+			inactiveNextKey++
+			err = s.subTrie.Update(keyToInsert[:], enc)
+			if err != nil {
+				fmt.Println("inactivateLeafNodes insert error:", err)
+				os.Exit(1)
+			}
+			inactivatedAccNum++
+
+			// update AddrToKey (active & inactive)
+			addr := common.BytesToAddress(enc) // BytesToAddress() returns last 20 bytes into addr
+			if len(common.AddrToKeyInactive[addr]) != 0 {
+				// code for debugging
+				fmt.Println("ERROR: there are more than one inactive accounts when inactivating")
+				fmt.Println("  addr:", addr)
+				fmt.Println("  active addr key:", common.AddrToKeyActive[addr])
+				fmt.Println("  inactive addr keys:", common.AddrToKeyInactive[addr])
+				fmt.Println("  last key to check:", lastKeyToCheck.Big())
+				os.Exit(1)
+			}
+			delete(common.AddrToKeyActive, addr)
+			common.AddrToKeyInactive[addr] = append(common.AddrToKeyInactive[addr], keyToInsert)
+			fmt.Println("inactivated addr:", addr, "at block:", blockNum)
+
+		} else {
+			// inactivation finished, stop iterating
+			if metrics.EnabledExpensive {
+				s.InactivateUpdates += time.Since(start)
+				s.InactivateNum += inactivatedAccNum
+			}
+			break
+		}
+	}
+	fmt.Println("InactivateOldAccounts() -> inactivated accounts num:", inactivatedAccNum)
+
+	//
+	// delete restored inactive accounts
+	//
+
+	deletedProofNum := 0
+	start := time.Now()
+	for _, key := range common.RestoredKeys {
+		if err := s.subTrie.Update(key[:], nil); err != nil {
+			s.setError(fmt.Errorf("updateStateObject (%x) error: %v", key[:], err))
+			fmt.Println("at DeletePreviousAccounts() -> s.trie.Update() err:", err)
+			os.Exit(1)
+		}
+	}
+	if metrics.EnabledExpensive {
+		s.UsedProofUpdtaes += time.Since(start)
+		s.UsedProofNum += len(common.RestoredKeys)
+	}
+
+	deletedProofNum = len(common.RestoredKeys)
+	fmt.Println("InactivateOldAccounts() -> deleted accounts num:", deletedProofNum)
+	common.RestoredKeys = make([]common.Hash, 0)
+
+	//
+	// hash active/inactive tries
+	//
+
+	if deletedProofNum == 0 && inactivatedAccNum == 0 {
+		// there is no proof to delete or account to inactivate
+		return 0, 0
+	}
+
+	start = time.Now()
+	s.trie.Hash()
+	s.subTrie.Hash()
+	if metrics.EnabledExpensive {
+		s.InactivateHashes += time.Since(start)
+	}
+
+	//
+	// commit inactive trie
+	//
+
+	start = time.Now()
+	newInactiveRoot, nodes, err := s.subTrie.Commit(true)
+	if err != nil {
+		fmt.Println("at InactivateOldAccounts(): trie.Commit() failed")
+		fmt.Println("  err:", err)
+		os.Exit(1)
+	}
+	if metrics.EnabledExpensive {
+		s.AccountCommits += time.Since(start)
+	}
+
+	start = time.Now()
+	s.db.TrieDB().Update(newInactiveRoot, originalInactiveRoot, blockNum, trienode.NewWithNodeSet(nodes), nil)
+	if metrics.EnabledExpensive {
+		s.TrieDBCommits += time.Since(start)
+	}
+
+	start = time.Now()
+	s.db.TrieDB().Commit(newInactiveRoot, false)
+	diskCommits := time.Since(start)
+
+	common.InactiveTrieRoot = newInactiveRoot
+	return diskCommits, inactiveNextKey - 1
+}
+
+// (jmlee)
+func (s *StateDB) PrintMeters() {
+	fmt.Println("StateDB.PrintMeters() executed")
+
+	//
+	// total
+	//
+	// TODO(jmlee): Count() does not work, fix this
+
+	// how many state trie update occured during simulation
+	fmt.Println("how many state trie update occured during simulation:", accountUpdatedMeter.Count())
+	// how many storage trie update occured during simulation
+	fmt.Println("how many storage trie update occured during simulation:", storageUpdatedMeter.Count())
+	// how many state trie delete occured during simulation
+	fmt.Println("how many state trie delete occured during simulation:", accountDeletedMeter.Count())
+	// how many storage trie delete occured during simulation
+	fmt.Println("how many storage trie delete occured during simulation:", storageDeletedMeter.Count())
+
+	// how many state trie nodes are updated
+	fmt.Println("how many state trie nodes are updated:", accountTrieUpdatedMeter.Count())
+	// how many stroage trie nodes are updated
+	fmt.Println("how many storage trie nodes are updated:", storageTriesUpdatedMeter.Count())
+	// how many state trie nodes are deleted
+	fmt.Println("how many state trie nodes are deleted:", accountTrieDeletedMeter.Count())
+	// how many stroage trie nodes are deleted
+	fmt.Println("how many storage trie nodes are deleted:", storageTriesDeletedMeter.Count())
+
+	//
+	// for latest block
+	//
+
+	// Measurements gathered during execution for debugging purposes
+	fmt.Println("state trie read time:", s.AccountReads.Nanoseconds(), "ns")            // only contain initial read times, not cached read times
+	fmt.Println("state trie hasing time:", s.AccountHashes.Nanoseconds(), "ns")         // include several trie.Hash() due to several IntermediateRoot() execution
+	fmt.Println("state trie update&delete time:", s.AccountUpdates.Nanoseconds(), "ns") // include several operations due to several IntermediateRoot() execution
+	fmt.Println("state trie.Commit() time:", s.AccountCommits.Nanoseconds(), "ns")      // trie.Commit() is executed only once for state trie
+
+	fmt.Println("storage trie read time:", s.StorageReads.Nanoseconds(), "ns")            // only contain initial read times, not cached read times
+	fmt.Println("storage trie hasing time:", s.StorageHashes.Nanoseconds(), "ns")         // include several trie.Hash() due to several IntermediateRoot() execution
+	fmt.Println("storage trie update&delete time:", s.StorageUpdates.Nanoseconds(), "ns") // include several operations due to several IntermediateRoot() execution
+	fmt.Println("storage trie.Commit() time:", s.StorageCommits.Nanoseconds(), "ns")      // trie.Commit() is executed several times for changed storage tries
+
+	// SnapshotAccountReads time.Duration
+	// SnapshotStorageReads time.Duration
+	// SnapshotCommits      time.Duration
+
+	fmt.Println("stateDB.db.TrieDB().Update() time:", s.TrieDBCommits.Nanoseconds(), "ns")
+	// s.AccountCommits + s.StorageCommits + s.TrieDBCommits = flush to trie.Database (memdb) time
+}
+
+func (s *StateDB) SaveMeters(simBlock *common.SimBlock) {
+
+	//
+	// stateDB metrics
+	//
+	simBlock.AccountReads = s.AccountReads
+	simBlock.AccountReadNum = s.AccountReadNum
+	simBlock.AccountHashes = s.AccountHashes
+	simBlock.AccountUpdates = s.AccountUpdates
+	simBlock.AccountCommits = s.AccountCommits
+	simBlock.StorageReads = s.StorageReads
+	simBlock.StorageHashes = s.StorageHashes
+	simBlock.StorageUpdates = s.StorageUpdates
+	simBlock.StorageCommits = s.StorageCommits
+	simBlock.SnapshotAccountReads = s.SnapshotAccountReads
+	simBlock.SnapshotStorageReads = s.SnapshotStorageReads
+	simBlock.SnapshotCommits = s.SnapshotCommits
+	simBlock.TrieDBCommits = s.TrieDBCommits
+
+	simBlock.AccountUpdated = common.AccountUpdated
+	simBlock.StorageUpdated = common.StorageUpdated
+	simBlock.AccountDeleted = common.AccountDeleted
+	simBlock.StorageDeleted = common.StorageDeleted
+
+	//
+	// Ethanos metrics
+	//
+	simBlock.CachedAccountReads = s.CachedAccountReads
+	simBlock.CachedAccountReadNum = s.CachedAccountReadNum
+
+	//
+	// Ethane metrics
+	//
+	simBlock.VoidAccountReadNum = s.VoidAccountReadNum
+	simBlock.VoidAccountReads = s.VoidAccountReads
+	simBlock.DeleteNum = s.DeleteNum
+	simBlock.DeleteUpdates = s.DeleteUpdates
+	simBlock.DeleteHashes = s.DeleteHashes
+	simBlock.InactivateNum = s.InactivateNum
+	simBlock.InactivateUpdates = s.InactivateUpdates
+	simBlock.InactivateHashes = s.InactivateHashes
+	simBlock.UsedProofNum = s.UsedProofNum
+	simBlock.UsedProofUpdtaes = s.UsedProofUpdtaes
 }

@@ -19,6 +19,7 @@ package hashdb
 import (
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"sync"
 	"time"
@@ -595,12 +596,35 @@ func (db *Database) Update(root common.Hash, parent common.Hash, block uint64, n
 	// to an account trie leaf.
 	if set, present := nodes.Sets[common.Hash{}]; present {
 		for _, n := range set.Leaves {
-			var account types.StateAccount
-			if err := rlp.DecodeBytes(n.Blob, &account); err != nil {
-				return err
-			}
-			if account.Root != types.EmptyRootHash {
-				db.reference(account.Root, n.Parent)
+			// deal with various type of account (jmlee)
+			if common.SimulationMode == common.EthereumMode {
+				var account types.StateAccount
+				if err := rlp.DecodeBytes(n.Blob, &account); err != nil {
+					return err
+				}
+				if account.Root != types.EmptyRootHash {
+					db.reference(account.Root, n.Parent)
+				}
+			} else if common.SimulationMode == common.EthaneMode {
+				var account types.EthaneStateAccount
+				if err := rlp.DecodeBytes(n.Blob, &account); err != nil {
+					return err
+				}
+				if account.Root != types.EmptyRootHash {
+					db.reference(account.Root, n.Parent)
+				}
+			} else if common.SimulationMode == common.EthanosMode {
+				var account types.EthanosStateAccount
+				if err := rlp.DecodeBytes(n.Blob, &account); err != nil {
+					return err
+				}
+				if account.Root != types.EmptyRootHash {
+					db.reference(account.Root, n.Parent)
+				}
+			} else {
+				fmt.Println("this must not happen")
+				fmt.Println("at Update() -> wrong mode:", common.SimulationMode)
+				os.Exit(1)
 			}
 		}
 	}

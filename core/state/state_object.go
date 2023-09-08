@@ -89,6 +89,15 @@ type stateObject struct {
 
 	// Flag whether the object was created in the current transaction
 	created bool
+
+	// for Ethane (jmlee)
+	originAddrKey common.Hash
+	newAddrKey common.Hash
+	ethaneData types.EthaneStateAccount // to avoid frequent allocation (jmlee)
+
+	// for Ethanos (jmlee)
+	restored bool // new field in Ethanos's account (jmlee)
+	ethanosData types.EthanosStateAccount // to avoid frequent allocation (jmlee)
 }
 
 // empty returns whether the account is considered empty.

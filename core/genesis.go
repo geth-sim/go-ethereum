@@ -439,6 +439,7 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 // ToBlock returns the genesis block according to genesis specification.
 func (g *Genesis) ToBlock() *types.Block {
 	root, err := g.Alloc.deriveHash()
+	common.NextKey = 1 // reset NextKey to generate Ethane's genesis state (jmlee)
 	if err != nil {
 		panic(err)
 	}

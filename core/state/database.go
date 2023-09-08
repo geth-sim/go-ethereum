@@ -19,6 +19,7 @@ package state
 import (
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
@@ -130,6 +131,22 @@ type Trie interface {
 	// nodes of the longest existing prefix of the key (at least the root), ending
 	// with the node that proves the absence of the key.
 	Prove(key []byte, proofDb ethdb.KeyValueWriter) error
+
+	//
+	// add functions for EVM simulation (jmlee)
+	//
+
+	// Get abstracts key-value read from the trie (jmlee)
+	Get(key []byte) ([]byte, error)
+
+	// Update abstracts key-value write to the trie (jmlee)
+	Update(key, value []byte) error
+
+	// TryDeleteLeft tries to inactivate leftmost account in active trie (jmlee)
+	TryDeleteLeft(endKey []byte) (error, []byte)
+
+	// GetLastKey returns the right-most key (jmlee)
+	GetLastKey() *big.Int
 }
 
 // NewDatabase creates a backing store for state. The returned database is safe for
@@ -179,6 +196,12 @@ func (db *cachingDB) OpenTrie(root common.Hash) (Trie, error) {
 
 // OpenStorageTrie opens the storage trie of an account.
 func (db *cachingDB) OpenStorageTrie(stateRoot common.Hash, address common.Address, root common.Hash) (Trie, error) {
+	// when state root is empty due to Ethanos's sweep
+	// set stateRoot as CachedTrieRoot to avoid empty root hash
+	// to deal with path-based state scheme's new format (jmlee)
+	if stateRoot == types.EmptyRootHash {
+		stateRoot = common.CachedTrieRoot
+	}
 	tr, err := trie.NewStateTrie(trie.StorageTrieID(stateRoot, crypto.Keccak256Hash(address.Bytes()), root), db.triedb)
 	if err != nil {
 		return nil, err

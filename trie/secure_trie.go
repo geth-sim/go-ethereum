@@ -17,6 +17,8 @@
 package trie
 
 import (
+	"math/big"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -81,6 +83,20 @@ func (t *StateTrie) MustGet(key []byte) []byte {
 	return t.trie.MustGet(t.hashKey(key))
 }
 
+// (jmlee)
+// Get returns the value for key stored in the trie.
+// The value bytes must not be modified by the caller.
+//
+// If the requested node is not present in trie, no error will be returned.
+// If the trie is corrupted, a MissingNodeError is returned.
+func (t *StateTrie) Get(key []byte) ([]byte, error) {
+	value, newroot, didResolve, err := t.trie.get(t.trie.root, keybytesToHex(key), 0)
+	if err == nil && didResolve {
+		t.trie.root = newroot
+	}
+	return value, err
+}
+
 // GetStorage attempts to retrieve a storage slot with provided account address
 // and slot key. The value bytes must not be modified by the caller.
 // If the specified storage slot is not in the trie, nil will be returned.
@@ -141,6 +157,20 @@ func (t *StateTrie) MustUpdate(key, value []byte) {
 	hk := t.hashKey(key)
 	t.trie.MustUpdate(hk, value)
 	t.getSecKeyCache()[string(hk)] = common.CopyBytes(key)
+}
+
+// (jmlee)
+// Update associates key with value in the trie. Subsequent calls to
+// Get will return value. If value has length zero, any existing value
+// is deleted from the trie and calls to Get will return nil.
+//
+// The value bytes must not be modified by the caller while they are
+// stored in the trie.
+//
+// If the requested node is not present in trie, no error will be returned.
+// If the trie is corrupted, a MissingNodeError is returned.
+func (t *StateTrie) Update(key, value []byte) error {
+	return t.trie.update(key, value)
 }
 
 // UpdateStorage associates key with value in the trie. Subsequent calls to
@@ -287,4 +317,17 @@ func (t *StateTrie) getSecKeyCache() map[string][]byte {
 		t.secKeyCache = make(map[string][]byte)
 	}
 	return t.secKeyCache
+}
+
+// (jmlee)
+// TryDeleteLeft removes leftmost account if its key is less than or equal to endKey (for Ethane's inactivation)
+// If a node was not found in the database, a MissingNodeError is returned.
+func (t *StateTrie) TryDeleteLeft(endKey []byte) (error, []byte) {
+	return t.trie.TryDeleteLeft(endKey)
+}
+
+// (jmlee)
+// get last key among leaf nodes (i.e., right-most key value)
+func (t *StateTrie) GetLastKey() *big.Int {
+	return t.trie.GetLastKey()
 }
