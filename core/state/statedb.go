@@ -602,12 +602,14 @@ func (s *StateDB) updateStateObject(obj *stateObject) {
 			// add original addrKey to D_A to delete previous account later
 			if obj.originAddrKey != common.ZeroHash {
 				common.KeysToDelete = append(common.KeysToDelete, obj.originAddrKey)
+				// fmt.Println("for addr:", addr, "add to K_D:", obj.originAddrKey.Big())
 			}
 
 			// alloc new addrKey
 			addrKey := common.HexToHash(strconv.FormatUint(common.NextKey, 16))
 			common.NextKey++
 			obj.newAddrKey = addrKey
+			// fmt.Println("for addr:", addr, "alloc new addr key:", obj.newAddrKey.Big())
 
 			// update K_A
 			common.AddrToKeyActive[addr] = addrKey
@@ -626,7 +628,7 @@ func (s *StateDB) updateStateObject(obj *stateObject) {
 		}
 
 		// update account trie
-		// fmt.Println("at updateStateObject() -> addr:", addr, " / newAddrKey:", obj.newAddrKey.Big())
+		// fmt.Println("at updateStateObject() -> addr:", addr, " / newAddrKey:", obj.newAddrKey.Big(), "/ originAddrKey:", obj.originAddrKey.Big())
 		if err := s.trie.Update(obj.newAddrKey[:], data); err != nil {
 			s.setError(fmt.Errorf("updateStateObject (%x) error: %v", addr[:], err))
 			fmt.Println("at updateStateObject() -> s.trie.Update() err:", err)
@@ -917,7 +919,7 @@ func (s *StateDB) getDeletedStateObjectEthane(addr common.Address) *stateObject 
 	// 	}
 	// }
 
-	// code for debugging, delete this later
+	// TODO(jmlee): code for debugging, delete this later
 	if addrKeys, exist := common.AddrToKeyInactive[addr]; exist {
 		fmt.Println("ERROR: try to get inactive account, but it is not restored")
 		fmt.Println("  addr:", addr)
@@ -1038,7 +1040,10 @@ func (s *StateDB) createObject(addr common.Address) (newobj, prev *stateObject) 
 		// set original position for Ethane (jmlee)
 		if common.SimulationMode == common.EthaneMode {
 			newobj.originAddrKey = prev.originAddrKey
+			newobj.newAddrKey = prev.newAddrKey
 		}
+		// fmt.Println("at createObject() addr:", addr, "prev.originAddrKey:", prev.originAddrKey.Big(), "prev.newAddrKey:", prev.newAddrKey.Big())
+		// fmt.Println("at createObject() addr:", addr, "newobj.originAddrKey:", newobj.originAddrKey.Big(), "newobj.newAddrKey:", newobj.newAddrKey.Big())
 	}
 
 	newobj.created = true
@@ -1838,17 +1843,22 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 			// update AddrToKey (active & inactive)
 			addr := common.BytesToAddress(enc) // BytesToAddress() returns last 20 bytes into addr
 			if len(common.AddrToKeyInactive[addr]) != 0 {
-				// code for debugging
+				// TODO(jmlee): code for debugging, delete this later
 				fmt.Println("ERROR: there are more than one inactive accounts when inactivating")
 				fmt.Println("  addr:", addr)
-				fmt.Println("  active addr key:", common.AddrToKeyActive[addr])
+				activeAddrKey , exist := common.AddrToKeyActive[addr]
+				if exist {
+					fmt.Println("  active addr key:", activeAddrKey)
+				} else {
+					fmt.Println("  active addr key: do not exist")
+				}
 				fmt.Println("  inactive addr keys:", common.AddrToKeyInactive[addr])
 				fmt.Println("  last key to check:", lastKeyToCheck.Big())
 				os.Exit(1)
 			}
 			delete(common.AddrToKeyActive, addr)
 			common.AddrToKeyInactive[addr] = append(common.AddrToKeyInactive[addr], keyToInsert)
-			fmt.Println("inactivated addr:", addr, "at block:", blockNum)
+			// fmt.Println("inactivated addr:", addr, "at block:", blockNum)
 
 		} else {
 			// inactivation finished, stop iterating

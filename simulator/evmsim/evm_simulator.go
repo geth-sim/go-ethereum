@@ -102,6 +102,7 @@ func connHandler(conn net.Conn) {
 
 				if mode == 0 || mode == 1 || mode == 2 {
 					common.SimulationMode = int(mode)
+					fmt.Println("current mode:", common.SimulationMode)
 				} else {
 					fmt.Println("Error switchSimulationMode: invalid mode ->", mode)
 					os.Exit(1)
@@ -889,6 +890,7 @@ func connHandler(conn net.Conn) {
 				// endBlockNum, _ := strconv.ParseUint(params[2], 10, 64)
 				lastBlockNumToLoad, _ := strconv.ParseUint(params[3], 10, 64)
 				lastBlockNumToLoadStr := fmt.Sprintf("%08d", lastBlockNumToLoad)
+				fmt.Println("last block num to load:", lastBlockNumToLoad)
 
 				jsonFileName := "evm_simulation_result_"
 				if common.SimulationMode == common.EthereumMode {
@@ -900,6 +902,7 @@ func connHandler(conn net.Conn) {
 				} else {
 					os.Exit(1)
 				}
+				fmt.Println("json file name:", jsonFileName)
 
 				// open json file
 				file, err := os.ReadFile(simBlocksPath + jsonFileName)
@@ -921,6 +924,7 @@ func connHandler(conn net.Conn) {
 				// set current state
 				latestSimBlock := common.SimBlocks[lastBlockNumToLoadStr]
 				currentStateRoot = latestSimBlock.StateRoot
+				fmt.Println("current state root:", currentStateRoot)
 				currentBlockNum = latestSimBlock.Number + 1
 				if common.SimulationMode == common.EthanosMode {
 					// set cached trie root
