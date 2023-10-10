@@ -48,8 +48,6 @@ emptyRoot = "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
 
 # open socket
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-# connect to the server
-client_socket.connect((SERVER_IP, SERVER_PORT))
 
 # caching data from db
 cache_address = {}
@@ -1569,14 +1567,39 @@ if __name__ == "__main__":
     fromLevel = 0 # how many parent nodes to omit in Merkle proofs
     flushInterval = 1 # block flush interval (default: 1, at every block / but genesis block is always flushed)
 
+    if len(sys.argv) > 1:
+        if len(sys.argv) != 9:
+            print("ERROR: wrong # of argv, you need to put")
+            print("  SERVER_PORT -> 8997: Ethereum, 8996: Ethanos, 8995: Ethane")
+            print("  simulationMode: 3: Ethereum, 4: Ethane, 5: Ethanos")
+            print("  startBlockNum, endBlockNum, lastKnownBlockNum, deleteEpoch, inactivateEpoch, inactivateCriterion")
+            sys.exit()
 
+        SERVER_PORT = int(sys.argv[1])
+        simulationMode = int(sys.argv[2])
+        startBlockNum = int(sys.argv[3])
+        endBlockNum = int(sys.argv[4])
+        lastKnownBlockNum = int(sys.argv[5])
+        deleteEpoch = int(sys.argv[6])
+        inactivateEpoch = int(sys.argv[7])
+        inactivateCriterion = int(sys.argv[8])
+        print("set new params")
+        print("  SERVER_PORT:", SERVER_PORT)
+        print("  simulationMode:", simulationMode)
+        print("  startBlockNum:", startBlockNum)
+        print("  endBlockNum:", endBlockNum)
+        print("  lastKnownBlockNum:", lastKnownBlockNum)
+        print("  deleteEpoch:", deleteEpoch)
+        print("  inactivateEpoch:", inactivateEpoch)
+        print("  inactivateCriterion:", inactivateCriterion)
 
     # generate restore list for Ethanos & Ethane
     # generateRestoreListEthanos(startBlockNum, endBlockNum, inactivateCriterion)
     # generateRestoreListEthane(startBlockNum, endBlockNum, deleteEpoch, inactivateEpoch, inactivateCriterion)
     # sys.exit()
 
-
+    # connect to geth
+    client_socket.connect((SERVER_IP, SERVER_PORT))
 
     # run simulation
     setDatabase(deleteDisk)

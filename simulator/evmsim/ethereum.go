@@ -26,7 +26,8 @@ var (
 	// choose leveldb vs memorydb
 	useLeveldb = true
 	// leveldb path ($ sudo chmod -R 777 /ethereum)
-	leveldbPath = "/ethereum/evm_simulator_jmlee/port_" + serverPort
+	leveldbPathPrefix = "/ethereum/evm_simulator_jmlee/port_"
+	leveldbPath = leveldbPathPrefix + ServerPort
 	// leveldb cache size (MB) (Geth default for mainnet: 4096 * 0.5 = 2048) (memory leak might occur when calling reset() frequently with too big cache size)
 	leveldbCache = 2048 // min: 16
 	// leveldb options
@@ -96,7 +97,8 @@ func setDatabase(deleteDisk bool) {
 		frdiskdb.Close()
 	}
 	if useLeveldb {
-		fmt.Println("set leveldb")
+		leveldbPath = leveldbPathPrefix + ServerPort
+		fmt.Println("set leveldb at:", leveldbPath)
 		// if do not delete directory, this just reopens existing db
 		if deleteDisk {
 			fmt.Println("delete disk, open new disk")
