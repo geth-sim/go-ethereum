@@ -585,7 +585,7 @@ func connHandler(conn net.Conn) {
 
 				// check results
 				simBlock.BlockExecuteTime = time.Since(blockStartTime)
-				fmt.Println("<<< execution success for block", header.Number, ">>>", "( mode:", common.SimulationModeNames[common.SimulationMode], "/ port:", serverPort, ")")
+				fmt.Println("<<< execution success for block", header.Number, ">>>", "( mode:", common.SimulationModeNames[common.SimulationMode], "/ port:", ServerPort, ")")
 				fmt.Println("  current state root:", currentStateRoot.Hex())
 				fmt.Println("  sub state root:", simBlock.SubStateRoot.Hex())
 				fmt.Println("  mainnet header.Root:", header.Root.Hex())
@@ -849,7 +849,7 @@ func connHandler(conn net.Conn) {
 
 			case "saveSimBlocks":
 				// get params
-				// fmt.Println("execute saveSimBlocks()")
+				fmt.Println("execute saveSimBlocks()")
 
 				fileName := params[1]
 
@@ -866,6 +866,7 @@ func connHandler(conn net.Conn) {
 					fmt.Println("File write error:", err)
 					return
 				}
+				fmt.Println("  saved file name:", fileName)
 
 				// save Ethane's additional indices
 				if common.SimulationMode == common.EthaneMode {
@@ -876,18 +877,19 @@ func connHandler(conn net.Conn) {
 						"D_I": common.RestoredKeys,
 					}
 
-					indiciesJsonData, err := json.MarshalIndent(indices, "", "  ")
+					jsonData, err = json.MarshalIndent(indices, "", "  ")
 					if err != nil {
 						fmt.Println("JSON marshaling error:", err)
 						return
 					}
 
 					indiciesFileName := "ethane_indices_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
-					err = os.WriteFile(simBlocksPath+indiciesFileName, indiciesJsonData, 0644)
+					err = os.WriteFile(simBlocksPath+indiciesFileName, jsonData, 0644)
 					if err != nil {
 						fmt.Println("File write error:", err)
 						return
 					}
+					fmt.Println("  saved indices file name:", indiciesFileName)
 				}
 
 				response = []byte("success")
@@ -1069,7 +1071,7 @@ func StartEvmSimulator() {
 
 	// open tcp socket
 	fmt.Println("open socket")
-	listener, err := net.Listen("tcp", ":"+serverPort)
+	listener, err := net.Listen("tcp", ":"+ServerPort)
 	fmt.Println(listener.Addr())
 	if nil != err {
 		log.Println(err)

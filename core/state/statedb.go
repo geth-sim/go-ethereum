@@ -179,6 +179,7 @@ type StateDB struct {
 func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
 	tr, err := db.OpenTrie(root)
 	if err != nil {
+		fmt.Println("at statedb.New() err for state trie: ", err)
 		return nil, err
 	}
 	sdb := &StateDB{
@@ -701,9 +702,9 @@ func (s *StateDB) deleteStateObject(obj *stateObject) {
 		if !exist {
 			// ex. at block 1456895, a contract is created and immediately deleted
 			// then it is not written in active trie yet, but try to delete
-			fmt.Println("at deleteStateObject() -> try to delete non-exist account, but this is not an error")
-			fmt.Println("  addr:", addr)
-			fmt.Println("  addrKey:", addrKey)
+			// fmt.Println("at deleteStateObject() -> try to delete non-exist account, but this is not an error")
+			// fmt.Println("  addr:", addr)
+			// fmt.Println("  addrKey:", addrKey)
 			return
 		}
 		if err := s.trie.Update(addrKey[:], nil); err != nil {
