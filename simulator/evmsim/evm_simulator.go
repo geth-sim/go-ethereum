@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -52,8 +53,9 @@ var (
 	//
 	// etc
 	//
-	big8  = big.NewInt(8)
-	big32 = big.NewInt(32)
+	big8                 = big.NewInt(8)
+	big32                = big.NewInt(32)
+	diskSizeMeasureEpoch = uint64(10000)
 )
 
 func connHandler(conn net.Conn) {
@@ -603,6 +605,19 @@ func connHandler(conn net.Conn) {
 				// myNewNormTrie, _ := trie.New(trie.StateTrieID(currentStateRoot), myTrieDB)
 				// myNewNormTrie.Print()
 
+				// measure disk usage
+				if currentBlockNum%diskSizeMeasureEpoch == 0 {
+					start := time.Now()
+					size, err := getDirectorySize(leveldbPath)
+					if err != nil {
+						fmt.Println("Error at getDirectorySize():", err)
+						os.Exit(1)
+					}
+					simBlock.DiskSize = size
+					fmt.Println("Directory Size (in bytes):", size)
+					fmt.Println("elapsed:", time.Since(start))
+				}
+
 				//
 				// cleanups
 				//
@@ -1022,6 +1037,23 @@ func connHandler(conn net.Conn) {
 	}
 }
 
+// get directory's size in bytes
+func getDirectorySize(path string) (int64, error) {
+	var size int64
+	err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return size, nil
+}
 
 // actual main() function
 func StartEvmSimulator() {

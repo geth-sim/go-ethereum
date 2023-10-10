@@ -78,6 +78,7 @@ type SimBlock struct {
 	AccountDeleted       int
 	StorageDeleted       int
 
+	DiskSize         int64         // disk usage (i.e., result of du -b)
 	DiskCommits      time.Duration // flush time to disk
 	BlockExecuteTime time.Duration // elapsed time to execute this block
 
