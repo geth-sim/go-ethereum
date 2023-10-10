@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -37,7 +38,7 @@ func sweep() {
 	fmt.Println("  -> cached root:", common.CachedTrieRoot.Hex())
 }
 
-func restoreEthanosAddrs() int {
+func restoreEthanosAddrs(simBlock *common.SimBlock) {
 	// fmt.Println("restoreEthanosAddrs() start")
 
 	currentTrie, err := trie.New(trie.StateTrieID(currentStateRoot), indepTrieDB)
@@ -69,19 +70,23 @@ func restoreEthanosAddrs() int {
 		isValidRestoreTarget := true
 
 		// check if this address is in current trie
+		start := time.Now()
 		currentEnc, err := currentTrie.Get(addrHash[:])
 		if err == nil && len(currentEnc) != 0 {
 			fmt.Println("this account is already active -> len(enc):", len(currentEnc))
 			isValidRestoreTarget = false
 			addrState += "active | "
 		}
+		simBlock.RestoreReads += time.Since(start)
 		// check if this address is in cached trie
+		start = time.Now()
 		cachedEnc, err := cachedTrie.Get(addrHash[:])
 		if err == nil && len(cachedEnc) != 0 {
 			fmt.Println("this account is cached -> len(enc):", len(cachedEnc))
 			isValidRestoreTarget = false
 			addrState += "cached | "
 		}
+		simBlock.RestoreSubReads += time.Since(start)
 
 		// do restore
 		var deletedEnc []byte
@@ -123,11 +128,18 @@ func restoreEthanosAddrs() int {
 					// encode restored account
 					data, _ := rlp.EncodeToBytes(&latestAcc)
 
+					start := time.Now()
 					err := currentTrie.Update(addrHash[:], data)
 					if err != nil {
 						fmt.Println("trie update err:", err)
 						os.Exit(1)
 					}
+					simBlock.RestoreUpdates += time.Since(start)
+
+					// trie hashing
+					start = time.Now()
+					currentTrie.Hash()
+					simBlock.RestoreHashes += time.Since(start)
 
 					// fmt.Println("  success restore -> addr:", addr.Hex())
 					// fmt.Println("cachedTrieRoots:", cachedTrieRoots)
@@ -218,29 +230,37 @@ func restoreEthanosAddrs() int {
 	// TODO(jmlee): StateDB 기반으로 갱신해두고 commit은 나중에 tx 수행 끝나고 몰아서 하는게 맞으려나?
 	// ethane에서도 restore, delete, inactivate도 그런 식으로 하는게 맞을 것 같기도 하고?
 	// SetNonce() 같은 걸로 restore 하는 꼼수를 부릴 수 있을 것 같음
+	simBlock.AccountRestoreNum = restoredNum
+
 	if restoredNum == 0 {
 		// no need to commit
-		return 0
+		return
 	}
 
 	// flush to trie.Database (memdb) (i.e., trie.Commit() & trieDB.Update())
+	start := time.Now()
 	newStateRoot, nodes, err := currentTrie.Commit(true)
 	if err != nil {
 		fmt.Println("at restoreEthanosAddrs(): trie.Commit() failed")
 		fmt.Println("  err:", err)
 		os.Exit(1)
 	}
+	simBlock.RestoreCommits = time.Since(start)
+	start = time.Now()
 	// note: last field is for path-based scheme, the field is ok to be nil when using hash-based scheme
 	indepTrieDB.Update(newStateRoot, currentStateRoot, currentBlockNum, trienode.NewWithNodeSet(nodes), nil)
+	simBlock.RestoreTrieDBCommits = time.Since(start)
 
 	// flush to disk
+	start = time.Now()
 	err = indepTrieDB.Commit(newStateRoot, false)
+	simBlock.RestoreDiskCommits = time.Since(start)
 	if err != nil {
 		fmt.Println("at Ethanos restoration: err:", err)
 	}
 
 	currentStateRoot = newStateRoot
-	fmt.Println("finish restoration -> current root:", currentStateRoot.Hex())
+	// fmt.Println("finish restoration -> current root:", currentStateRoot.Hex())
 
-	return restoredNum
+	return
 }

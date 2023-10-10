@@ -2,8 +2,10 @@ package evmsim
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -33,7 +35,7 @@ var (
 
 // might be deprecated: use v2 if there is no problem
 func restoreEthaneAddrs() int {
-	fmt.Println("restoreEthaneAddrs() start")
+	// fmt.Println("restoreEthaneAddrs() start")
 
 	activeTrie, err := trie.New(trie.StateTrieID(currentStateRoot), indepTrieDB)
 	if err != nil {
@@ -108,7 +110,7 @@ func restoreEthaneAddrs() int {
 				fmt.Println("trie update err:", err)
 				os.Exit(1)
 			}
-			fmt.Println("  success restore -> addr:", addr.Hex())
+			// fmt.Println("  success restore -> addr:", addr.Hex())
 			restoreSuccess = true
 			restoredNum++
 
@@ -181,8 +183,8 @@ func restoreEthaneAddrs() int {
 	return restoredNum
 }
 
-func restoreEthaneAddrsV2() int {
-	fmt.Println("restoreEthaneAddrsV2() start")
+func restoreEthaneAddrsV2(simBlock *common.SimBlock) {
+	// fmt.Println("restoreEthaneAddrsV2() start")
 	// fmt.Println("access addrs:", accessAddrs)
 
 	activeTrie, err := trie.New(trie.StateTrieID(currentStateRoot), indepTrieDB)
@@ -248,7 +250,9 @@ func restoreEthaneAddrsV2() int {
 		}
 
 		// check if this address is in current trie
+		start := time.Now()
 		activeAddrKey, exist := common.AddrToKeyActive[addr]
+		simBlock.RestoreReads += time.Since(start)
 		var activeEnc []byte
 		if exist {
 			activeEnc, err = activeTrie.Get(activeAddrKey[:])
@@ -271,10 +275,18 @@ func restoreEthaneAddrsV2() int {
 				fmt.Println("  err:", err)
 				os.Exit(1)
 			}
+		} else {
+			// void read for fair comparison
+			start := time.Now()
+			randomNumber := uint64(rand.Int63n(int64(common.NextKey)))
+			randomAddrKey := common.HexToHash(strconv.FormatUint(randomNumber, 16))
+			activeTrie.Get(randomAddrKey[:])
+			simBlock.RestoreSubReads += time.Since(start)
 		}
 
 		// restore inactive account
 		if isValidRestoreTarget {
+			start := time.Now()
 			activeKey := common.HexToHash(strconv.FormatUint(common.NextKey, 16))
 			common.NextKey++
 			err := activeTrie.Update(activeKey[:], inactiveEnc)
@@ -282,14 +294,21 @@ func restoreEthaneAddrsV2() int {
 				fmt.Println("trie update err:", err)
 				os.Exit(1)
 			}
-			fmt.Println("  success restore -> addr:", addr.Hex())
-			// restoreSuccess = true
-			restoredNum++
 
 			// update K_A, K_I, D_I
 			common.AddrToKeyActive[addr] = activeKey
 			delete(common.AddrToKeyInactive, addr)
 			common.RestoredKeys = append(common.RestoredKeys, inactiveAddrKey)
+			simBlock.RestoreUpdates += time.Since(start)
+
+			// fmt.Println("  success restore -> addr:", addr.Hex())
+			// restoreSuccess = true
+			restoredNum++
+
+			// trie hashing
+			start = time.Now()
+			activeTrie.Hash()
+			simBlock.RestoreHashes += time.Since(start)
 		}
 
 		// // if restoration failed, write error log
@@ -331,31 +350,38 @@ func restoreEthaneAddrsV2() int {
 	//
 	// commit restored accounts
 	//
+	simBlock.AccountRestoreNum = restoredNum
 
 	accessAddrs = make([]common.Address, 0)
 	if restoredNum == 0 {
 		// no need to commit
-		return 0
+		return
 	}
 
 	// flush to trie.Database (memdb) (i.e., trie.Commit() & trieDB.Update())
+	start := time.Now()
 	newStateRoot, nodes, err := activeTrie.Commit(true)
 	if err != nil {
-		fmt.Println("at restoreEthanosAddrs(): trie.Commit() failed")
+		fmt.Println("at restoreEthaneAddrs(): trie.Commit() failed")
 		fmt.Println("  err:", err)
 		os.Exit(1)
 	}
+	simBlock.RestoreCommits = time.Since(start)
+	start = time.Now()
 	// note: last field is for path-based scheme, the field is ok to be nil when using hash-based scheme
 	indepTrieDB.Update(newStateRoot, currentStateRoot, currentBlockNum, trienode.NewWithNodeSet(nodes), nil)
+	simBlock.RestoreTrieDBCommits = time.Since(start)
 
 	// flush to disk
+	start = time.Now()
 	err = indepTrieDB.Commit(newStateRoot, false)
+	simBlock.RestoreDiskCommits = time.Since(start)
 	if err != nil {
-		fmt.Println("at Ethanos restoration: err:", err)
+		fmt.Println("at Ethane restoration: err:", err)
 	}
 
 	currentStateRoot = newStateRoot
-	fmt.Println("finish restoration -> current root:", currentStateRoot.Hex())
+	// fmt.Println("finish restoration -> current root:", currentStateRoot.Hex())
 
-	return restoredNum
+	return
 }

@@ -426,19 +426,13 @@ func connHandler(conn net.Conn) {
 				// restore inactive accounts which will be needed in this block
 				//
 				if len(restoreAddrs) != 0 || len(accessAddrs) != 0 {
-					var restoredNum int
 					start := time.Now()
 					if common.SimulationMode == common.EthaneMode {
-						if len(restoreAddrs) != 0 {
-							restoredNum = restoreEthaneAddrs()
-						} else {
-							restoredNum = restoreEthaneAddrsV2()
-						}
+						restoreEthaneAddrsV2(simBlock)
 					} else if common.SimulationMode == common.EthanosMode {
-						restoredNum = restoreEthanosAddrs()
+						restoreEthanosAddrs(simBlock)
 					}
 					simBlock.AccountRestores += time.Since(start)
-					simBlock.AccountRestoreNum += restoredNum
 				}
 
 				//

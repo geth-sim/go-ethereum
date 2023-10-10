@@ -82,9 +82,16 @@ type SimBlock struct {
 	DiskCommits      time.Duration // flush time to disk
 	BlockExecuteTime time.Duration // elapsed time to execute this block
 
-	// for Ethanos & Ethane
-	AccountRestoreNum int
-	AccountRestores   time.Duration
+	// restoration for Ethanos & Ethane
+	AccountRestoreNum    int
+	AccountRestores      time.Duration
+	RestoreReads         time.Duration
+	RestoreSubReads      time.Duration // void read for Ethane, cached trie read for Ethanos
+	RestoreHashes        time.Duration
+	RestoreUpdates       time.Duration
+	RestoreCommits       time.Duration
+	RestoreTrieDBCommits time.Duration
+	RestoreDiskCommits   time.Duration
 
 	// for Ethanos
 	CachedAccountReads   time.Duration
