@@ -53,9 +53,11 @@ var (
 	//
 	// etc
 	//
-	big8                 = big.NewInt(8)
-	big32                = big.NewInt(32)
-	diskSizeMeasureEpoch = uint64(10000)
+	big8                   = big.NewInt(8)
+	big32                  = big.NewInt(32)
+	diskSizeMeasureEpoch   = uint64(50000)
+	diskSizeMeasureCnt     = 0
+	diskSizeMeasureElapsed time.Duration
 )
 
 func connHandler(conn net.Conn) {
@@ -601,15 +603,26 @@ func connHandler(conn net.Conn) {
 
 				// measure disk usage
 				if currentBlockNum%diskSizeMeasureEpoch == 0 {
+					fmt.Println("try to get disk size")
+					cnt := 0
 					start := time.Now()
-					size, err := getDirectorySize(leveldbPath)
-					if err != nil {
-						fmt.Println("Error at getDirectorySize():", err)
-						os.Exit(1)
+					for {
+						cnt++
+						size, err := getDirectorySize(leveldbPath)
+						if err != nil {
+							// fmt.Println("Error at getDirectorySize():", err)
+							// fmt.Println("  this is", cnt, "th try")
+							time.Sleep(3 * time.Second)
+							continue
+						}
+						simBlock.DiskSize = size
+						break
 					}
-					simBlock.DiskSize = size
-					fmt.Println("Directory Size (in bytes):", size)
-					fmt.Println("elapsed:", time.Since(start))
+					diskSizeMeasureCnt += cnt
+					diskSizeMeasureElapsed += time.Since(start)
+					fmt.Println("Directory Size (in bytes):", simBlock.DiskSize, "after", cnt, "attempts")
+					fmt.Println("  total cnt:", diskSizeMeasureCnt)
+					fmt.Println("  total elapsed:", diskSizeMeasureElapsed)
 				}
 
 				//

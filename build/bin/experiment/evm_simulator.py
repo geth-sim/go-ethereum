@@ -1608,6 +1608,7 @@ if __name__ == "__main__":
         simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval)
     elif simulationMode == 4:
         # simulateEthaneEVM(startBlockNum, endBlockNum, deleteEpoch, inactivateEpoch, inactivateCriterion, fromLevel, temp_result_save_inteval)
+        haveRestoreList = False # v2 does not need restore list
         simulateEthaneEVM_v2(startBlockNum, endBlockNum, deleteEpoch, inactivateEpoch, inactivateCriterion, fromLevel, temp_result_save_inteval)
     elif simulationMode == 5:
         simulateEthanosEVM(startBlockNum, endBlockNum, inactivateCriterion, fromLevel, temp_result_save_inteval)
