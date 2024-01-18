@@ -55,7 +55,7 @@ var (
 	//
 	big8                   = big.NewInt(8)
 	big32                  = big.NewInt(32)
-	diskSizeMeasureEpoch   = uint64(50000)
+	diskSizeMeasureEpoch   = uint64(100000)
 	diskSizeMeasureCnt     = 0
 	diskSizeMeasureElapsed time.Duration
 )
