@@ -486,10 +486,29 @@ def checkTxExecutionResult(nonce, balance, root, codeHash, addr):
     else:
         return False
 
-def saveSimBlocks(fileName):
+def saveSimBlocks(fileName, blockNumToSave):
     cmd = str("saveSimBlocks")
     cmd += str(",")
     cmd += str(fileName)
+    cmd += str(",")
+    cmd += str(blockNumToSave)
+
+    client_socket.send(cmd.encode())
+    data = client_socket.recv(1024)
+    result = data.decode()
+    # print("saveSimBlocks result:", result)
+
+# for Ethane
+def mergeSimBlocks(lastBlockNum, saveInterval, deleteEpoch, inactivateEpoch, inactivateCriterion, fromLevel):
+
+    switchSimulationMode(1) # 1: Ethane mode
+    setEthaneParams(deleteEpoch, inactivateEpoch, inactivateCriterion, fromLevel)
+
+    cmd = str("mergeSimBlocks")
+    cmd += str(",")
+    cmd += str(lastBlockNum)
+    cmd += str(",")
+    cmd += str(saveInterval)
 
     client_socket.send(cmd.encode())
     data = client_socket.recv(1024)
@@ -614,7 +633,7 @@ def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_resu
         # save intermediate results
         if saveResults and blockNum % temp_result_save_inteval == 0 and blockNum > lastKnownBlockNum and blockNum != endBlockNum:
             temp_file_name = "evm_simulation_result_Ethereum_" + str(0) + "_" + str(blockNum) + ".json"
-            saveSimBlocks(temp_file_name)
+            saveSimBlocks(temp_file_name, temp_result_save_inteval)
 
         # compare tx result with write results
         if checkStateValidity:
@@ -647,7 +666,7 @@ def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_resu
 
     # simulation finished
     if saveResults:
-        saveSimBlocks(sim_blocks_file_name)
+        saveSimBlocks(sim_blocks_file_name, temp_result_save_inteval)
         print("save result:", sim_blocks_file_name)
 
     print("finish Ethereum EVM simulation")
@@ -693,6 +712,7 @@ def simulateEthanosEVM(startBlockNum, endBlockNum, sweepEpoch, fromLevel, temp_r
         restore_list_file_name = "restore_list_Ethanos_" + str(0) + "_" + str(last_block_num_of_restore_list) + "_" + str(sweepEpoch) + ".json"
         with open(restoreListFilePath+restore_list_file_name, 'r') as json_file:
             restore_list = json.load(json_file)
+            print("finished loading restore list ->", restore_list_file_name)
 
     # simulation result file name
     sim_blocks_file_name = "evm_simulation_result_Ethanos_" + str(0) + "_" + str(endBlockNum) + "_" + str(sweepEpoch) + ".json"
@@ -810,7 +830,7 @@ def simulateEthanosEVM(startBlockNum, endBlockNum, sweepEpoch, fromLevel, temp_r
         # save intermediate results
         if saveResults and blockNum % temp_result_save_inteval == 0 and blockNum > lastKnownBlockNum and blockNum != endBlockNum:
             temp_file_name = "evm_simulation_result_Ethanos_" + str(0) + "_" + str(blockNum) + "_" + str(sweepEpoch) + ".json"
-            saveSimBlocks(temp_file_name)
+            saveSimBlocks(temp_file_name, temp_result_save_inteval)
 
         # compare tx result with write results
         if checkStateValidity:
@@ -856,7 +876,7 @@ def simulateEthanosEVM(startBlockNum, endBlockNum, sweepEpoch, fromLevel, temp_r
 
     # simulation finished
     if saveResults:
-        saveSimBlocks(sim_blocks_file_name)
+        saveSimBlocks(sim_blocks_file_name, temp_result_save_inteval)
         print("save result:", sim_blocks_file_name)
 
     print("finish Ethanos EVM simulation")
@@ -1019,7 +1039,7 @@ def simulateEthaneEVM(startBlockNum, endBlockNum, deleteEpoch, inactivateEpoch, 
         # save intermediate results
         if saveResults and blockNum % temp_result_save_inteval == 0 and blockNum > lastKnownBlockNum and blockNum != endBlockNum:
             temp_file_name = "evm_simulation_result_Ethane_" + str(0) + "_" + str(blockNum) + "_" + str(deleteEpoch) + "_" + str(inactivateEpoch) + "_" + str(inactivateCriterion) + ".json"
-            saveSimBlocks(temp_file_name)
+            saveSimBlocks(temp_file_name, temp_result_save_inteval)
 
         # compare tx result with write results
         if checkStateValidity:
@@ -1077,7 +1097,7 @@ def simulateEthaneEVM(startBlockNum, endBlockNum, deleteEpoch, inactivateEpoch, 
 
     # simulation finished
     if saveResults:
-        saveSimBlocks(sim_blocks_file_name)
+        saveSimBlocks(sim_blocks_file_name, temp_result_save_inteval)
         print("save result:", sim_blocks_file_name)
 
     print("finish Ethane EVM simulation")
@@ -1194,7 +1214,7 @@ def simulateEthaneEVM_v2(startBlockNum, endBlockNum, deleteEpoch, inactivateEpoc
         # save intermediate results
         if saveResults and blockNum % temp_result_save_inteval == 0 and blockNum > lastKnownBlockNum and blockNum != endBlockNum:
             temp_file_name = "evm_simulation_result_Ethane_" + str(0) + "_" + str(blockNum) + "_" + str(deleteEpoch) + "_" + str(inactivateEpoch) + "_" + str(inactivateCriterion) + ".json"
-            saveSimBlocks(temp_file_name)
+            saveSimBlocks(temp_file_name, temp_result_save_inteval)
 
         # compare tx result with write results
         if checkStateValidity:
@@ -1235,7 +1255,7 @@ def simulateEthaneEVM_v2(startBlockNum, endBlockNum, deleteEpoch, inactivateEpoc
 
     # simulation finished
     if saveResults:
-        saveSimBlocks(sim_blocks_file_name)
+        saveSimBlocks(sim_blocks_file_name, temp_result_save_inteval)
         print("save result:", sim_blocks_file_name)
 
     print("finish Ethane EVM simulation")
@@ -1600,6 +1620,10 @@ if __name__ == "__main__":
 
     # connect to geth
     client_socket.connect((SERVER_IP, SERVER_PORT))
+
+    # optional: merge simblocks for Ethane
+    # mergeSimBlocks(10000000, temp_result_save_inteval, deleteEpoch, inactivateEpoch, inactivateCriterion, fromLevel)
+    # sys.exit(1)
 
     # run simulation
     setDatabase(deleteDisk)

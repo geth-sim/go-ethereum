@@ -632,6 +632,12 @@ func connHandler(conn net.Conn) {
 				// save this block's simulation result
 				common.SimBlocks[blockNumStr] = simBlock
 
+				// delete old block infos to deal with out-of-memory error
+				if common.SimulationMode == common.EthaneMode && currentBlockNum > 2000000 {
+					oldBlockNum := fmt.Sprintf("%08d", currentBlockNum-2000000)
+					delete(common.SimBlocks, oldBlockNum)
+				}
+
 				// clear txArgsList
 				txArgsList = make([]*core.TransactionArgs, 0)
 
@@ -865,9 +871,28 @@ func connHandler(conn net.Conn) {
 				fmt.Println("execute saveSimBlocks()")
 
 				fileName := params[1]
+				blockNumToSave, _ := strconv.ParseUint(params[2], 10, 64)
 
 				// encoding map to json
-				jsonData, err := json.MarshalIndent(common.SimBlocks, "", "  ")
+				var jsonData []byte
+				var err error
+				if common.SimulationMode == common.EthaneMode {
+					// save recent SimBlocks for Ethane to avoid out-of-memory error
+					minKey := fmt.Sprintf("%08d", currentBlockNum-blockNumToSave-1)
+					maxKey := fmt.Sprintf("%08d", currentBlockNum-1)
+					filteredSimBlocks := make(map[string]*common.SimBlock)
+					for key, value := range common.SimBlocks {
+						if key >= minKey && key <= maxKey {
+							filteredSimBlocks[key] = value
+						}
+					}
+					jsonData, err = json.MarshalIndent(filteredSimBlocks, "", "  ")
+					fileName = "evm_simulation_result_Ethane_" + strconv.FormatUint(currentBlockNum-blockNumToSave-1, 10) + "_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" +strconv.FormatUint(inactivateCriterion, 10) + ".json"
+				} else {
+					// save all SimBlocks at once
+					jsonData, err = json.MarshalIndent(common.SimBlocks, "", "  ")
+				}
+
 				if err != nil {
 					fmt.Println("JSON marshaling error:", err)
 					return
@@ -883,27 +908,75 @@ func connHandler(conn net.Conn) {
 
 				// save Ethane's additional indices
 				if common.SimulationMode == common.EthaneMode {
-					indices := map[string]interface{}{
-						"K_A": common.AddrToKeyActive,
-						"K_I": common.AddrToKeyInactive,
-						"D_A": common.KeysToDelete,
-						"D_I": common.RestoredKeys,
-					}
+					// TODO(jmlee): avoid out of memory error
+					// fmt.Println("try to save Ethane indexes")
+					// indices := map[string]interface{}{
+					// 	"K_A": common.AddrToKeyActive,
+					// 	"K_I": common.AddrToKeyInactive,
+					// 	"D_A": common.KeysToDelete,
+					// 	"D_I": common.RestoredKeys,
+					// }
 
-					jsonData, err = json.MarshalIndent(indices, "", "  ")
-					if err != nil {
-						fmt.Println("JSON marshaling error:", err)
-						return
-					}
+					// jsonData, err = json.MarshalIndent(indices, "", "  ")
+					// if err != nil {
+					// 	fmt.Println("JSON marshaling error:", err)
+					// 	return
+					// }
 
-					indiciesFileName := "ethane_indices_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
-					err = os.WriteFile(simBlocksPath+indiciesFileName, jsonData, 0644)
-					if err != nil {
-						fmt.Println("File write error:", err)
-						return
-					}
-					fmt.Println("  saved indices file name:", indiciesFileName)
+					// indiciesFileName := "ethane_indices_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
+					// err = os.WriteFile(simBlocksPath+indiciesFileName, jsonData, 0644)
+					// if err != nil {
+					// 	fmt.Println("File write error:", err)
+					// 	return
+					// }
+					// fmt.Println("  saved indices file name:", indiciesFileName)
 				}
+
+				response = []byte("success")
+
+			case "mergeSimBlocks":
+				lastBlockNum, _ := strconv.ParseUint(params[1], 10, 64)
+				saveInterval, _ := strconv.ParseUint(params[2], 10, 64)
+
+				mergedSimBlocks := make(map[string]*common.SimBlock)
+
+				for i := lastBlockNum; i > 0; i -= saveInterval {
+					// open json file
+					fileName := "evm_simulation_result_Ethane_" + strconv.FormatUint(i-saveInterval, 10) + "_" + strconv.FormatUint(i, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" +strconv.FormatUint(inactivateCriterion, 10) + ".json"
+					// fileName := "evm_simulation_result_Ethane_0_" + strconv.FormatUint(i, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" +strconv.FormatUint(inactivateCriterion, 10) + ".json"
+					fmt.Println("file to merge:", fileName)
+					
+					file, err := os.ReadFile(simBlocksPath + fileName)
+					if err != nil {
+						fmt.Println("Error opening file:", err)
+						os.Exit(1)
+					}
+
+					// load SimBlocks
+					loadedSimBlocks := make(map[string]*common.SimBlock)
+					json.Unmarshal([]byte(file), &loadedSimBlocks)
+
+					// merge SimBlocks
+					for blockNumStr, simBlock := range loadedSimBlocks {
+						mergedSimBlocks[blockNumStr] = simBlock
+					}
+				}
+
+				fileName := "merged_evm_simulation_result_Ethane_0_" + strconv.FormatUint(lastBlockNum, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" +strconv.FormatUint(inactivateCriterion, 10) + ".json"
+				jsonData, err := json.MarshalIndent(mergedSimBlocks, "", "  ")
+				if err != nil {
+					fmt.Println("JSON marshaling error:", err)
+					return
+				}
+
+				// save as a json file
+				err = os.WriteFile(simBlocksPath+fileName, jsonData, 0644)
+				if err != nil {
+					fmt.Println("File write error:", err)
+					return
+				}
+				fmt.Println("  merged file name:", fileName)
+				fmt.Println("  merge simblocks success")
 
 				response = []byte("success")
 
