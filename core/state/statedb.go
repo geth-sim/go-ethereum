@@ -920,16 +920,16 @@ func (s *StateDB) getDeletedStateObjectEthane(addr common.Address) *stateObject 
 	// 	}
 	// }
 
-	// TODO(jmlee): code for debugging, delete this later
-	if addrKeys, exist := common.AddrToKeyInactive[addr]; exist {
-		fmt.Println("ERROR: try to get inactive account, but it is not restored")
-		fmt.Println("  addr:", addr)
-		fmt.Println("  active addr key:", common.AddrToKeyActive[addr])
-		fmt.Println("  inactive addr keys:", addrKeys)
-		fmt.Println("  txHash:", s.thash.Hex())
-		fmt.Println("  txIndex:", s.txIndex)
-		os.Exit(1)
-	}
+	// code for debugging
+	// if addrKeys, exist := common.AddrToKeyInactive[addr]; exist {
+	// 	fmt.Println("ERROR: try to get inactive account, but it is not restored")
+	// 	fmt.Println("  addr:", addr)
+	// 	fmt.Println("  active addr key:", common.AddrToKeyActive[addr])
+	// 	fmt.Println("  inactive addr keys:", addrKeys)
+	// 	fmt.Println("  txHash:", s.thash.Hex())
+	// 	fmt.Println("  txIndex:", s.txIndex)
+	// 	os.Exit(1)
+	// }
 
 	// If snapshot unavailable or reading from it failed, load from the database
 	var addrKey common.Hash
@@ -1791,6 +1791,12 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 // delete all previous accounts in active trie for Ethane (jmlee)
 func (s *StateDB) DeletePreviousAccounts() {
 
+	// there is no previous accounts, thus no need to delete
+	if len(common.KeysToDelete) == 0 {
+		fmt.Println("DeletePreviousAccounts() -> deleted accounts num:", len(common.KeysToDelete))
+		return
+	}
+
 	start := time.Now()
 	for _, key := range common.KeysToDelete {
 		if err := s.trie.Update(key[:], nil); err != nil {
@@ -1876,7 +1882,7 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	// delete restored inactive accounts
 	//
 
-	deletedProofNum := 0
+	deletedProofNum := len(common.RestoredKeys)
 	start := time.Now()
 	for _, key := range common.RestoredKeys {
 		if err := s.subTrie.Update(key[:], nil); err != nil {
@@ -1885,12 +1891,11 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 			os.Exit(1)
 		}
 	}
-	if metrics.EnabledExpensive {
+	if metrics.EnabledExpensive && deletedProofNum > 0 {
 		s.UsedProofUpdtaes += time.Since(start)
-		s.UsedProofNum += len(common.RestoredKeys)
+		s.UsedProofNum += deletedProofNum
 	}
 
-	deletedProofNum = len(common.RestoredKeys)
 	fmt.Println("InactivateOldAccounts() -> deleted accounts num:", deletedProofNum)
 	common.RestoredKeys = make([]common.Hash, 0)
 
