@@ -972,17 +972,17 @@ func (s *StateDB) getDeletedStateObjectEthane(addr common.Address) *stateObject 
 			}
 		} else {
 			// this address does not exist in active trie
-			//
-			// TODO(jmlee): add random read for fair comparison? AddrToKeyActive looks like snapshot
-			//
-			start := time.Now()
-			randomNumber := uint64(rand.Int63n(int64(common.NextKey)))
-			randomAddrKey := common.HexToHash(strconv.FormatUint(randomNumber, 16))
-			s.trie.Get(randomAddrKey[:])
-			if metrics.EnabledExpensive {
-				s.VoidAccountReads += time.Since(start)
-				s.VoidAccountReadNum++
-			}
+
+			// => we thouroughly tested, but reading random accounts in this case little degrades Ethane's performance
+			// so such void reads do not have to be executed
+			// start := time.Now()
+			// randomNumber := uint64(rand.Int63n(int64(common.NextKey)))
+			// randomAddrKey := common.HexToHash(strconv.FormatUint(randomNumber, 16))
+			// s.trie.Get(randomAddrKey[:])
+			// if metrics.EnabledExpensive {
+			// 	s.VoidAccountReads += time.Since(start)
+			// 	s.VoidAccountReadNum++
+			// }
 
 			return nil
 		}
