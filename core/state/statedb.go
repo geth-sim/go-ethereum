@@ -746,6 +746,9 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	}
 
 	// If no live objects are available, attempt to use snapshots
+	if metrics.EnabledExpensive {
+		s.AccountReadNum++
+	}
 	var data *types.StateAccount
 	if s.snap != nil {
 		start := time.Now()
@@ -755,8 +758,10 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		}
 		if err == nil {
 			if acc == nil {
+				// searched snapshot but account does not exist
 				return nil
 			}
+			// searched snapshot and found account
 			data = &types.StateAccount{
 				Nonce:    acc.Nonce,
 				Balance:  acc.Balance,
@@ -799,6 +804,9 @@ func (s *StateDB) getDeletedStateObjectEthanos(addr common.Address) *stateObject
 	// If no live objects are available, attempt to use snapshots
 	var data *types.EthanosStateAccount
 	accData := new(types.StateAccount)
+	if metrics.EnabledExpensive {
+		s.AccountReadNum++
+	}
 	// TODO(jmlee): implement for snapshot
 	// if s.snap != nil {
 	// 	start := time.Now()
@@ -841,7 +849,6 @@ func (s *StateDB) getDeletedStateObjectEthanos(addr common.Address) *stateObject
 		}
 		if metrics.EnabledExpensive {
 			s.AccountReads += time.Since(start1)
-			s.AccountReadNum++
 		}
 
 		if data == nil {
@@ -894,6 +901,9 @@ func (s *StateDB) getDeletedStateObjectEthane(addr common.Address) *stateObject 
 	// If no live objects are available, attempt to use snapshots
 	var data *types.EthaneStateAccount
 	accData := new(types.StateAccount)
+	if metrics.EnabledExpensive {
+		s.AccountReadNum++
+	}
 	// TODO(jmlee): implement for snapshot
 	// if s.snap != nil {
 	// 	start := time.Now()
@@ -952,7 +962,6 @@ func (s *StateDB) getDeletedStateObjectEthane(addr common.Address) *stateObject 
 			}
 			if metrics.EnabledExpensive {
 				s.AccountReads += time.Since(start2)
-				s.AccountReadNum++
 			}
 			if err1 != nil || err2 != nil {
 				s.setError(fmt.Errorf("getDeleteStateObject (%x) error: %w %w", addr.Bytes(), err1, err2))
@@ -1853,7 +1862,7 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 				// TODO(jmlee): code for debugging, delete this later
 				fmt.Println("ERROR: there are more than one inactive accounts when inactivating")
 				fmt.Println("  addr:", addr)
-				activeAddrKey , exist := common.AddrToKeyActive[addr]
+				activeAddrKey, exist := common.AddrToKeyActive[addr]
 				if exist {
 					fmt.Println("  active addr key:", activeAddrKey)
 				} else {

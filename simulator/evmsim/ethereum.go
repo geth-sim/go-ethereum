@@ -27,9 +27,9 @@ var (
 	useLeveldb = true
 	// leveldb path ($ sudo chmod -R 777 /ethereum)
 	leveldbPathPrefix = "/ethereum/evm_simulator_jmlee/port_"
-	leveldbPath = leveldbPathPrefix + ServerPort
-	// leveldb cache size (MB) (Geth default for mainnet: 4096 * 0.5 = 2048) (memory leak might occur when calling reset() frequently with too big cache size)
-	leveldbCache = 2048 // min: 16
+	leveldbPath       = leveldbPathPrefix + ServerPort
+	// leveldb cache size (MB) (archive mode: 2048, full mode: 2048, min: 16) (memory leak might occur when calling reset() frequently with too big cache size)
+	leveldbCache = 2048
 	// leveldb options
 	leveldbNamespace = "eth/db/chaindata/"
 	leveldbReadonly  = false
@@ -42,7 +42,7 @@ var (
 	mainTrieDB  *trie.Database // state trie (Ethereum, Ethanos) or active trie (Ethane)
 	subTrieDB   *trie.Database // cached trie (Ethanos) or inactive trie (Ethane)
 	indepTrieDB *trie.Database // independent trie db for reading cached tries (is it needed for fair performance measure?)
-	// trie cache size (MB) (Geth default for archive mainnet: 4096 * 30% = 1228)
+	// trie cache size (MB) (archive mode: 1228, full mode: 614, min: 32)
 	trieCacheSize = 1228 // min: 32 (maybe)
 
 	//
