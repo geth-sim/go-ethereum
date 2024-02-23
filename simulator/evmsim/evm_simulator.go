@@ -33,12 +33,8 @@ var (
 	// simulator server
 	//
 	// port for requests
-	// 8998: develop
-	// 8997: Ethereum ~5M test
-	// 8996: Ethanos ~5M test
-	// 8995: Ethane ~5M test
-	// 8994: test
-	serverPort = "8994"
+	// 8999: test
+	ServerPort = "8999"
 	// maximum byte length of response
 	maxResponseLen = 4097
 
@@ -55,7 +51,7 @@ var (
 	//
 	big8                   = big.NewInt(8)
 	big32                  = big.NewInt(32)
-	diskSizeMeasureEpoch   = uint64(100000)
+	diskSizeMeasureEpoch   = uint64(200000)
 	diskSizeMeasureCnt     = 0
 	diskSizeMeasureElapsed time.Duration
 )
@@ -887,7 +883,7 @@ func connHandler(conn net.Conn) {
 						}
 					}
 					jsonData, err = json.MarshalIndent(filteredSimBlocks, "", "  ")
-					fileName = "evm_simulation_result_Ethane_" + strconv.FormatUint(currentBlockNum-blockNumToSave-1, 10) + "_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" +strconv.FormatUint(inactivateCriterion, 10) + ".json"
+					fileName = "evm_simulation_result_Ethane_" + strconv.FormatUint(currentBlockNum-blockNumToSave-1, 10) + "_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
 				} else {
 					// save all SimBlocks at once
 					jsonData, err = json.MarshalIndent(common.SimBlocks, "", "  ")
@@ -942,10 +938,10 @@ func connHandler(conn net.Conn) {
 
 				for i := lastBlockNum; i > 0; i -= saveInterval {
 					// open json file
-					fileName := "evm_simulation_result_Ethane_" + strconv.FormatUint(i-saveInterval, 10) + "_" + strconv.FormatUint(i, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" +strconv.FormatUint(inactivateCriterion, 10) + ".json"
+					fileName := "evm_simulation_result_Ethane_" + strconv.FormatUint(i-saveInterval, 10) + "_" + strconv.FormatUint(i, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
 					// fileName := "evm_simulation_result_Ethane_0_" + strconv.FormatUint(i, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" +strconv.FormatUint(inactivateCriterion, 10) + ".json"
 					fmt.Println("file to merge:", fileName)
-					
+
 					file, err := os.ReadFile(simBlocksPath + fileName)
 					if err != nil {
 						fmt.Println("Error opening file:", err)
@@ -962,7 +958,7 @@ func connHandler(conn net.Conn) {
 					}
 				}
 
-				fileName := "merged_evm_simulation_result_Ethane_0_" + strconv.FormatUint(lastBlockNum, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" +strconv.FormatUint(inactivateCriterion, 10) + ".json"
+				fileName := "merged_evm_simulation_result_Ethane_0_" + strconv.FormatUint(lastBlockNum, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
 				jsonData, err := json.MarshalIndent(mergedSimBlocks, "", "  ")
 				if err != nil {
 					fmt.Println("JSON marshaling error:", err)

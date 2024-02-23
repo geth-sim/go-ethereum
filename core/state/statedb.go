@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"math/rand"
 	"os"
 	"sort"
 	"strconv"
