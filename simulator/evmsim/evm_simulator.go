@@ -461,7 +461,7 @@ func connHandler(conn net.Conn) {
 						header, txArg, &header.GasUsed, vm.Config{})
 					if metrics.EnabledExpensive {
 						txExecute := time.Since(start)
-						if txArg.Input == nil || len(*txArg.Input) == 0 {
+						if receipt.GasUsed == 21000 {
 							// payment tx
 							simBlock.PaymentTxLen++
 							simBlock.PaymentTxExecutes += txExecute
