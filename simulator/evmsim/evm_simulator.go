@@ -1,7 +1,6 @@
 package evmsim
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,12 +20,15 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/trie/triedb/hashdb"
+	"github.com/syndtr/goleveldb/leveldb"
 )
 
 var (
@@ -42,9 +45,11 @@ var (
 	// log files
 	//
 	// simulation result log file path
-	logFilePath   = "./logFiles/evm/"
-	simBlocksPath = logFilePath + "simBlocks/"
-	errLogPath    = logFilePath + "errLogs/"
+	logFilePath     = "./logFiles/evm/"
+	simBlocksPath   = logFilePath + "simBlocks/"
+	cacheStatsPath  = logFilePath + "cacheStats/"
+	opcodeStatsPath = logFilePath + "opcodeStats/"
+	errLogPath      = logFilePath + "errLogs/"
 
 	//
 	// etc
@@ -107,6 +112,31 @@ func connHandler(conn net.Conn) {
 					fmt.Println("Error switchSimulationMode: invalid mode ->", mode)
 					os.Exit(1)
 				}
+
+				response = []byte("success")
+
+			// TODO(jmlee): add option for path-based state scheme
+			case "setSimulationOptions":
+				// fmt.Println("execute setSimulationOptions()")
+				snapshotOption, _ := strconv.ParseInt(params[1], 10, 64)
+				trieNodePrefixLen, _ := strconv.ParseInt(params[2], 10, 64)
+				opcodeLoggingOption, _ := strconv.ParseInt(params[3], 10, 64)
+
+				// enable snapshot or not
+				common.EnableSnapshot = (snapshotOption != 0)
+
+				// prefixing trie nodes or not
+				common.PrefixLength = int(trieNodePrefixLen)
+				common.EnableNodePrefixing = (trieNodePrefixLen != 0)
+
+				// logging or not
+				common.LoggingOpcodeStats = (opcodeLoggingOption != 0)
+
+				fmt.Println("setSimulationOptions complete")
+				fmt.Println("  common.EnableSnapshot:", common.EnableSnapshot)
+				fmt.Println("  common.EnableNodePrefixing:", common.EnableNodePrefixing)
+				fmt.Println("  common.PrefixLength:", common.PrefixLength)
+				fmt.Println("  common.LoggingOpcodeStats:", common.LoggingOpcodeStats)
 
 				response = []byte("success")
 
@@ -371,6 +401,10 @@ func connHandler(conn net.Conn) {
 				// get params
 				// fmt.Println("execute executeTransactionArgsList()")
 
+				if common.EnableNodePrefixing {
+					trie.SetCurrentBlockNum(currentBlockNum)
+				}
+
 				if currentBlockNum == 0 {
 					fmt.Println("set genesis state")
 
@@ -382,10 +416,12 @@ func connHandler(conn net.Conn) {
 					// check validity
 					genesisHeader := myChainContext.GetHeader(common.Hash{}, currentBlockNum)
 					if common.SimulationMode == common.EthereumMode && generatedBlockHeader.Root() != genesisHeader.Root {
-						fmt.Println("genesis state is wrong")
-						fmt.Println("generated state root:\t", generatedBlockHeader.Root().Hex())
-						fmt.Println("genesis header.Root:\t", genesisHeader.Root.Hex())
-						os.Exit(1)
+						if !common.EnableNodePrefixing {
+							fmt.Println("genesis state is wrong")
+							fmt.Println("generated state root:\t", generatedBlockHeader.Root().Hex())
+							fmt.Println("genesis header.Root:\t", genesisHeader.Root.Hex())
+							os.Exit(1)
+						}
 					}
 
 					// prepare next block
@@ -438,11 +474,31 @@ func connHandler(conn net.Conn) {
 				// set stateDB
 				//
 				blockStartTime := time.Now()
-				// TODO(jmlee): implement snapshot
-				// bc.snaps, _ = snapshot.New(bc.db, bc.stateCache.TrieDB(), bc.cacheConfig.SnapshotLimit, head.Root(), !bc.cacheConfig.SnapshotWait, true, recover)
-				// snaps := nil
-				// stateDB, err := state.New(emptyRoot, stateCache, snaps)
-				stateDB, err := state.New(currentStateRoot, stateCache, nil)
+				if common.EnableSnapshot && mySnaps == nil {
+					mySnapconfig := snapshot.Config{
+						CacheSize: snapshotCacheSize,
+						// CacheSize:  bc.cacheConfig.SnapshotLimit,
+						// Recovery:   recover,
+						// NoBuild:    bc.cacheConfig.SnapshotNoBuild,
+						AsyncBuild: false,
+						// AsyncBuild: !bc.cacheConfig.SnapshotWait,
+					}
+
+					mySnaps, err = snapshot.New(mySnapconfig, diskdb, mainTrieDB, currentStateRoot)
+					if err != nil {
+						fmt.Println("err: snapshot is not made")
+						os.Exit(1)
+					} else {
+						fmt.Println("snapshot enabled!")
+					}
+
+					if currentBlockNum == 1 {
+						leveldb.ResetCacheStat(0)
+					} else {
+						leveldb.ResetCacheStat(currentBlockNum)
+					}
+				}
+				stateDB, err := state.New(currentStateRoot, stateCache, mySnaps)
 				if err != nil {
 					fmt.Println("ERROR: state.New() err:", err)
 					os.Exit(1)
@@ -451,7 +507,7 @@ func connHandler(conn net.Conn) {
 				//
 				// execute transactionArgsList
 				//
-				stateDB.StartPrefetcher("miner") // TODO(jmlee): is it good to do for fast commit? -> needed for snapshot
+				stateDB.StartPrefetcher("miner") // when snapshot is enabled, read needed trie nodes at background
 				gasPool := new(core.GasPool).AddGas(header.GasLimit)
 				deleteEmptyObjects := myChainConfig.IsEIP158(header.Number) // blockNum > 2,675,000
 				for txIndex, txArg := range txArgsList {
@@ -585,7 +641,7 @@ func connHandler(conn net.Conn) {
 
 				// check results
 				simBlock.BlockExecuteTime = time.Since(blockStartTime)
-				fmt.Println("<<< execution success for block", header.Number, ">>>", "( mode:", common.SimulationModeNames[common.SimulationMode], "/ port:", ServerPort, ")")
+				fmt.Println("<<< execution success for block", header.Number, ">>>", "( mode:", common.GetSimulationTypeName(), "/ port:", ServerPort, ")")
 				fmt.Println("  current state root:", currentStateRoot.Hex())
 				fmt.Println("  sub state root:", simBlock.SubStateRoot.Hex())
 				fmt.Println("  mainnet header.Root:", header.Root.Hex())
@@ -594,7 +650,9 @@ func connHandler(conn net.Conn) {
 				fmt.Println("  restored accounts num:", simBlock.AccountRestoreNum, "/ total:", totalRestoreNum)
 				if common.SimulationMode == common.EthereumMode && currentStateRoot != header.Root {
 					fmt.Println("ERR: executeTransactionArgsList: Ethereum state not match")
-					os.Exit(1)
+					if !common.EnableNodePrefixing {
+						os.Exit(1)
+					}
 				}
 				// myNewNormTrie, _ := trie.New(trie.StateTrieID(currentStateRoot), myTrieDB)
 				// myNewNormTrie.Print()
@@ -621,6 +679,28 @@ func connHandler(conn net.Conn) {
 					fmt.Println("Directory Size (in bytes):", simBlock.DiskSize, "after", cnt, "attempts")
 					fmt.Println("  total cnt:", diskSizeMeasureCnt)
 					fmt.Println("  total elapsed:", diskSizeMeasureElapsed)
+				}
+
+				// print trie node read stats
+				fmt.Println()
+				fmt.Println("Geth trie cache size:", trieCacheSize, "MB")
+				hashdb.PrintReadStats()
+				fmt.Println()
+				fmt.Println("LevelDB cache size:", leveldbCache, "MB")
+				leveldb.PrintReadStats()
+				// if common.LoggingOpcodeStats {
+				// 	common.CurrentOpcodeStat.Print()
+				// }
+				if currentBlockNum%1000 == 0 {
+					readTrieCleanCacheNum, readTrieDirtyCacheNum, readTrieCleanCacheTime, readTrieDirtyCacheTime := hashdb.ResetCacheStat()
+
+					leveldb.SaveCacheStat(currentBlockNum, readTrieCleanCacheNum, readTrieDirtyCacheNum, readTrieCleanCacheTime, readTrieDirtyCacheTime)
+					leveldb.ResetCacheStat(currentBlockNum + 1)
+
+					if common.LoggingOpcodeStats {
+						common.SaveOpcodeStat(currentBlockNum)
+						common.ResetOpcodeStat(currentBlockNum + 1)
+					}
 				}
 
 				//
@@ -868,8 +948,28 @@ func connHandler(conn net.Conn) {
 				// get params
 				fmt.Println("execute saveSimBlocks()")
 
+				// print total cache stats
+				fmt.Println("Geth trie cache size:", trieCacheSize, "MB")
+				hashdb.PrintReadStats()
+				fmt.Println("LevelDB cache size:", leveldbCache, "MB")
+				leveldb.PrintTotalCacheStat()
+				leveldb.SaveCacheLogs(cacheStatsPath, "cache_stats_"+common.GetSimulationTypeName())
+				if common.LoggingOpcodeStats {
+					common.SaveOpcodeLogs(opcodeStatsPath)
+				}
+
 				fileName := params[1]
 				blockNumToSave, _ := strconv.ParseUint(params[2], 10, 64)
+
+				// TODO(jmlee): do not receive filaName from python client
+				mapKeys := make([]string, 0)
+				for k, _ := range common.SimBlocks {
+					mapKeys = append(mapKeys, k)
+				}
+				sort.Strings(mapKeys)
+				firstBlockNum := common.SimBlocks[mapKeys[0]].Number
+				lastBlockNum := common.SimBlocks[mapKeys[len(mapKeys)-1]].Number
+				fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + ".json"
 
 				// encoding map to json
 				var jsonData []byte
@@ -885,7 +985,7 @@ func connHandler(conn net.Conn) {
 						}
 					}
 					jsonData, err = json.MarshalIndent(filteredSimBlocks, "", "  ")
-					fileName = "evm_simulation_result_Ethane_" + strconv.FormatUint(currentBlockNum-blockNumToSave-1, 10) + "_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
+					fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(currentBlockNum-blockNumToSave-1, 10) + "_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
 				} else {
 					// save all SimBlocks at once
 					jsonData, err = json.MarshalIndent(common.SimBlocks, "", "  ")
@@ -928,6 +1028,17 @@ func connHandler(conn net.Conn) {
 					// 	return
 					// }
 					// fmt.Println("  saved indices file name:", indiciesFileName)
+				}
+
+				// commit snapshot
+				if common.EnableSnapshot && mySnaps != nil {
+					fmt.Println("save snapshot...")
+					err := mySnaps.Cap(currentStateRoot, 0) // commit all diff layers
+					if err != nil {
+						fmt.Println("ERROR: fail to save snapshot -> err:", err)
+						os.Exit(1)
+					}
+					fmt.Println("  save snapshot completed")
 				}
 
 				response = []byte("success")
@@ -1093,7 +1204,248 @@ func connHandler(conn net.Conn) {
 					}
 				}
 
+				leveldb.ResetCacheStat(lastBlockNumToLoad + 1)
+				common.ResetOpcodeStat(lastBlockNumToLoad + 1)
+
 				fmt.Println("load state success")
+				response = []byte("success")
+
+			case "setStateRootAndTargetBlockNum":
+				fmt.Println("execute setStateRootAndTargetBlockNum()")
+
+				// starBlockNum, _ := strconv.ParseUint(params[1], 10, 64)
+				// endBlockNum, _ := strconv.ParseUint(params[2], 10, 64)
+				lastBlockNumToLoad, _ := strconv.ParseUint(params[3], 10, 64)
+				lastBlockNumToLoadStr := fmt.Sprintf("%08d", lastBlockNumToLoad)
+				targetBlockNum, _ := strconv.ParseUint(params[4], 10, 64)
+				fmt.Println("last block num to load:", lastBlockNumToLoad)
+				fmt.Println("targetBlockNum:", targetBlockNum)
+
+				jsonFileName := "evm_simulation_result_"
+				jsonFileName += "Ethereum_" + params[1] + "_" + params[2] + ".json"
+				fmt.Println("json file name:", jsonFileName)
+
+				// open json file
+				file, err := os.ReadFile(simBlocksPath + jsonFileName)
+				if err != nil {
+					fmt.Println("Error opening file:", err)
+					os.Exit(1)
+				}
+
+				// load SimBlocks
+				loadedSimBlocks := make(map[string]*common.SimBlock)
+				json.Unmarshal([]byte(file), &loadedSimBlocks)
+
+				// set current state
+				latestSimBlock := loadedSimBlocks[lastBlockNumToLoadStr]
+				currentStateRoot = latestSimBlock.StateRoot
+				fmt.Println("current state root:", currentStateRoot)
+
+				// set target block number (= decide EVM version for DoS attack)
+				currentBlockNum = targetBlockNum
+
+				// set cache stats of Geth trie and LevelDB
+				leveldb.ResetCacheStat(lastBlockNumToLoad + 1)
+				common.ResetOpcodeStat(lastBlockNumToLoad + 1)
+
+				fmt.Println("set state root and target block number complete")
+				response = []byte("success")
+
+			case "simulateDoSAttack":
+				fmt.Println("\nexecute simulateDoSAttack()")
+
+				// receive large msg
+				if params[len(params)-1] != "@" {
+					finalBuf := make([]byte, 0)
+					finalBuf = append(finalBuf, recvBuf[:n]...)
+					cnt := 0
+					ns := make([]int, 0)
+					for {
+						cnt++
+						n, err := conn.Read(recvBuf)
+						if err != nil {
+							if err == io.EOF {
+								log.Println(err)
+								return
+							}
+							log.Println(err)
+							return
+						}
+						ns = append(ns, n)
+						finalBuf = append(finalBuf, recvBuf[:n]...)
+
+						request := string(finalBuf)
+
+						if request[len(request)-1] == '@' {
+							params = strings.Split(request, ",")
+							break
+						}
+					}
+				}
+
+				attackerAddr := common.HexToAddress(params[1])
+				attackerBalance := new(big.Int)
+				attackerBalance, _ = attackerBalance.SetString(params[2], 10)
+				contractAddr := common.HexToAddress(params[3])
+				contractBytecode := common.Hex2Bytes(params[4])
+
+				//
+				// open statedb
+				//
+				if common.EnableSnapshot && mySnaps == nil {
+					mySnapconfig := snapshot.Config{
+						CacheSize: 256,
+						// CacheSize:  bc.cacheConfig.SnapshotLimit,
+						// Recovery:   recover,
+						// NoBuild:    bc.cacheConfig.SnapshotNoBuild,
+						// AsyncBuild: !bc.cacheConfig.SnapshotWait,
+					}
+					mySnaps, err = snapshot.New(mySnapconfig, diskdb, mainTrieDB, currentStateRoot)
+					if err != nil {
+						fmt.Println("err: snapshot is not made")
+						os.Exit(1)
+					} else {
+						fmt.Println("snapshot enabled!")
+					}
+				}
+				stateDB, err := state.New(currentStateRoot, stateCache, mySnaps)
+				if err != nil {
+					fmt.Println("ERROR: state.New() err:", err)
+					os.Exit(1)
+				}
+
+				// increase attacker's balance
+				stateDB.AddBalance(attackerAddr, attackerBalance)
+
+				// deploy attack contract
+				// stateDB.CreateAccount(contractAddr) // this is not essential
+				stateDB.SetCode(contractAddr, contractBytecode)
+
+				//
+				// execute transactionArgsList
+				//
+
+				// get header
+				header := myChainContext.GetHeader(common.Hash{}, currentBlockNum)
+				fmt.Println("start attack execution at block", currentBlockNum)
+
+				// reset attack stat
+				common.CurrentAttackStat = common.NewAttackStat()
+
+				attackTxGasCost := uint64(0)
+				stateDB.StartPrefetcher("miner") // when snapshot is enabled, read needed trie nodes at background
+				gasPool := new(core.GasPool).AddGas(header.GasLimit)
+				gasPool.AddGas(uint64(30000000))                            // TODO(jmlee): add enough gas for attack tx, is this ok to do so?
+				deleteEmptyObjects := myChainConfig.IsEIP158(header.Number) // blockNum > 2,675,000
+				_ = deleteEmptyObjects
+
+				// TODO(jmlee): execute normal transactions before attacking
+
+				attackStartTime := time.Now()
+				common.IsDoSAttacking = true
+				for txIndex, txArg := range txArgsList {
+					receipt, err := core.ApplyTransactionArgs(myChainConfig, &myChainContext, &header.Coinbase, gasPool, stateDB,
+						header, txArg, &header.GasUsed, vm.Config{})
+					if err != nil {
+						fmt.Println("ApplyTransaction() err:", err)
+						fmt.Println("at block", header.Number, "/ tx index:", txIndex)
+						txArg.Print()
+
+						// stateDB.RevertToSnapshot(snap) // do not needed maybe, since we do not have to rollback state
+						os.Exit(1)
+					}
+					attackTxGasCost = receipt.GasUsed
+				}
+				common.IsDoSAttacking = false
+
+				//
+				// print attack result
+				//
+				attackTxExecutionTime := time.Since(attackStartTime)
+				totalOpcodeExecutionTime := int64(0)
+				totalOpcodeGasCost := uint64(0)
+				for i := 0; i < len(common.CurrentAttackStat.OpcodeNames); i++ {
+					totalOpcodeExecutionTime += common.CurrentAttackStat.ExecutionTimes[i]
+					totalOpcodeGasCost += common.CurrentAttackStat.GasCosts[i]
+				}
+				fmt.Println("attack tx finished, print attack results")
+				fmt.Println("  # of opcodes:", len(common.CurrentAttackStat.OpcodeNames))
+				fmt.Println("  tx execution time:", attackTxExecutionTime.Nanoseconds(), "ns")
+				fmt.Println("  opcode execution time:", totalOpcodeExecutionTime, "ns")
+				fmt.Println("  tx gas cost:", attackTxGasCost)
+				fmt.Println("    opcode gas cost:", totalOpcodeGasCost)
+				fmt.Println("    starting gas cost:", common.CurrentAttackStat.StartingGasCost)
+				fmt.Println("    tx.data gas cost:", common.CurrentAttackStat.TxDataGasCost)
+				fmt.Println("    access list gas cost:", common.CurrentAttackStat.AccessListGasCost)
+				fmt.Println("    refund gas cost:", common.CurrentAttackStat.RefundAmount)
+				measuredAttackTxGasCost := totalOpcodeGasCost + common.CurrentAttackStat.StartingGasCost + common.CurrentAttackStat.TxDataGasCost + common.CurrentAttackStat.AccessListGasCost - common.CurrentAttackStat.RefundAmount
+				if attackTxGasCost != measuredAttackTxGasCost {
+					fmt.Println("ERROR: tx gas cost is weird")
+					fmt.Println("  correct tx cost:", attackTxGasCost)
+					fmt.Println("  wrongly measured tx cost:", measuredAttackTxGasCost)
+					os.Exit(1)
+				}
+
+				// fmt.Println("stateRoot before attack:", currentStateRoot.Hex())
+				// stateRoot := stateDB.IntermediateRoot(deleteEmptyObjects)
+				// fmt.Println("stateRoot after attack:", stateRoot.Hex())
+
+				//
+				// cleanups
+				//
+
+				// clear txArgsList
+				txArgsList = make([]*core.TransactionArgs, 0)
+
+				// return attack results
+				responseStr := ""
+				responseStr += strconv.FormatInt(int64(len(common.CurrentAttackStat.OpcodeNames)), 10) + ","
+				responseStr += strconv.FormatInt(totalOpcodeExecutionTime, 10) + ","
+				responseStr += strconv.FormatInt(attackTxExecutionTime.Nanoseconds(), 10) + ","
+				responseStr += strconv.FormatUint(totalOpcodeGasCost, 10) + ","
+				responseStr += strconv.FormatUint(attackTxGasCost, 10)
+				response = []byte(responseStr)
+
+			case "benchmarkSync":
+				fmt.Println("execute benchmarkSync()")
+
+				// reset cache stats
+				hashdb.ResetCacheStat()
+				leveldb.ResetCacheStat(0)
+
+				// mimic fast sync
+				stateRootToSend := common.HexToHash(params[1])
+				// trieToSend, _ := trie.New(trie.StateTrieID(stateRootToSend), mainTrieDB)
+				trieToSend, _ := trie.New(trie.StateTrieID(stateRootToSend), indepTrieDB)
+				trieToSend.MimicFastSync()
+
+				// print trie node read stats
+				// fmt.Println()
+				// fmt.Println("Geth trie cache size:", trieCacheSize, "MB")
+				// hashdb.PrintReadStats()
+				fmt.Println()
+				fmt.Println("LevelDB cache size:", leveldbCache, "MB")
+				leveldb.PrintReadStats()
+				// leveldb.PrintTotalCacheStat()
+
+				response = []byte("success")
+
+			case "inspectAndCopyState":
+				fmt.Println("execute inspectAndCopyState()")
+
+				// get params
+				stateRootToInspect := common.HexToHash(params[1])
+				copyHash, _ := strconv.ParseInt(params[2], 10, 64)
+				copyStateHash := (copyHash != 0)
+				copyHashSnap, _ := strconv.ParseInt(params[3], 10, 64)
+				copyStateHashSnapshot := (copyHashSnap != 0)
+				copyPath, _ := strconv.ParseInt(params[4], 10, 64)
+				copyStatePath := (copyPath != 0)
+				copyPathSnap, _ := strconv.ParseInt(params[5], 10, 64)
+				copyStatePathSnapshot := (copyPathSnap != 0)
+
+				trie.InspectAndCopyState(stateRootToInspect, frdiskdb, copyStateHash, copyStateHashSnapshot, copyStatePath, copyStatePathSnapshot)
+
 				response = []byte("success")
 
 			case "stopSimulation":

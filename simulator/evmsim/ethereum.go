@@ -11,12 +11,15 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/leveldb"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
+
+	realleveldb "github.com/syndtr/goleveldb/leveldb"
 )
 
 var (
@@ -38,12 +41,18 @@ var (
 	// disk to store trie nodes (either leveldb or memorydb)
 	diskdb   ethdb.KeyValueStore
 	frdiskdb ethdb.Database
+
 	// trie's database including diskdb and clean cache
 	mainTrieDB  *trie.Database // state trie (Ethereum, Ethanos) or active trie (Ethane)
 	subTrieDB   *trie.Database // cached trie (Ethanos) or inactive trie (Ethane)
 	indepTrieDB *trie.Database // independent trie db for reading cached tries (is it needed for fair performance measure?)
 	// trie cache size (MB) (archive mode: 1228, full mode: 614, min: 32)
 	trieCacheSize = 1228 // min: 32 (maybe)
+
+	// Geth's snapshot
+	mySnaps *snapshot.Tree
+	// snapshot cache size (MB) (archive mode: 820, full mode: 410, min: 0)
+	snapshotCacheSize = 820
 
 	//
 	// for EVM simulation
@@ -53,8 +62,10 @@ var (
 
 	stateCache state.Database
 
-	txList     = make([]*types.Transaction, 0)
-	txArgsList = make([]*core.TransactionArgs, 0)
+	// TODO(jmlee): split txs for their purposes
+	txList           = make([]*types.Transaction, 0)
+	txArgsList       = make([]*core.TransactionArgs, 0)
+	attackTxArgsList = make([]*core.TransactionArgs, 0) // txs for DoS attack
 
 	myChainContext = MyChainContext{
 		Headers: make(map[uint64]*types.Header, 0),
@@ -142,6 +153,9 @@ func setDatabase(deleteDisk bool) {
 
 	// subNormTrieDB = trie.NewDatabaseWithConfig(diskdb, &trie.Config{Cache: trieCacheSize}) // if want to split clean caches
 	fmt.Println("trie clean cache size:", trieCacheSize, "MB")
+
+	// reset cache stats
+	realleveldb.ResetCacheStat(0)
 }
 
 // (jmlee) ChainContext is not needed only to execute txs through EVM, so just add meaningless ChainContext-like struct

@@ -8,8 +8,23 @@ from datetime import datetime
 from os.path import exists
 import pymysql.cursors
 import csv
-import multiprocessing
+import multiprocessing as mp
 from multiprocessing.pool import ThreadPool as Pool
+import subprocess
+
+#########################################
+from eth.vm import opcode_values
+from brkgen.program import Program
+from brkgen.data_layout import DataLayout
+from brkgen import codegen as cg
+
+my_conn, child_conn = mp.Pipe()
+# no tx.data input
+# p_codegenerator = mp.Process(target=cg.genetic.generate, args=('byzantium', 'stats/eth_throughput_5171000_5588000.json', child_conn, 1))
+# can select tx.data input
+# p_codegenerator = mp.Process(target=cg.genetic2.generate, args=('byzantium', 'stats/eth_throughput_5171000_5588000.json', child_conn, 1))
+# p_codegenerator.start()
+#########################################
 
 # ethereum tx data DB options
 db_host = 'localhost'
@@ -204,6 +219,21 @@ def switchSimulationMode(mode):
     data = client_socket.recv(1024)
     result = data.decode()
     print("switchSimulationModeResult result:", result)
+    return result
+
+# set simulation options
+def setSimulationOptions(enableSnapshot, trieNodePrefixLen, loggingOpcodeStats):
+    cmd = str("setSimulationOptions")
+    cmd += str(",")
+    cmd += str(int(enableSnapshot))
+    cmd += str(",")
+    cmd += str(trieNodePrefixLen)
+    cmd += str(",")
+    cmd += str(int(loggingOpcodeStats))
+    client_socket.send(cmd.encode())
+    data = client_socket.recv(1024)
+    result = data.decode()
+    print("setSimulationOptions result:", result)
     return result
 
 # set Ethanos's system parameters
@@ -529,6 +559,36 @@ def loadSimBlocks(starBlockNum, endBlockNum, lastBlockNumToLoad):
     result = data.decode()
     # print("loadSimBlocks result:", result)
 
+def benchmarkSync(stateRoot):
+    cmd = str("benchmarkSync")
+    cmd += str(",")
+    cmd += str(stateRoot)
+    
+    client_socket.send(cmd.encode())
+    data = client_socket.recv(1024)
+    result = data.decode()
+    # print("benchmarkSync result:", result)
+    return result
+
+def inspectAndCopyState(stateRoot, copyStateHash, copyStateHashSnap, copyStatePath, copyStatePathSnap):
+    cmd = str("inspectAndCopyState")
+    cmd += str(",")
+    cmd += str(stateRoot)
+    cmd += str(",")
+    cmd += str(int(copyStateHash))
+    cmd += str(",")
+    cmd += str(int(copyStateHashSnap))
+    cmd += str(",")
+    cmd += str(int(copyStatePath))
+    cmd += str(",")
+    cmd += str(int(copyStatePathSnap))
+    
+    client_socket.send(cmd.encode())
+    data = client_socket.recv(1024)
+    result = data.decode()
+    # print("inspectAndCopyState result:", result)
+    return result
+
 # stop simulation
 def stopSimulation():
     cmd = str("stopSimulation")
@@ -570,6 +630,7 @@ def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_resu
     loginterval = 1000
     batchsize = 1000 # db query batch size
 
+    # TODO(jmlee): do not query r/w lists when checkStateValidity is False
     rwList = select_account_read_write_lists(cursor_thread, startBlockNum, startBlockNum+batchsize)
     rw_list_index = 0
 
@@ -671,6 +732,279 @@ def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_resu
 
     print("finish Ethereum EVM simulation")
     print("elapsed time:", datetime.now()-startTime)
+
+# generate random ethereum address
+def generateRandomAddress():
+    randHex = binascii.b2a_hex(os.urandom(20))
+    return randHex.decode('utf-8')
+
+def dropPageCaches():
+    MY_SUDO_PW = 'FILL_PASSWORD'
+    if MY_SUDO_PW == 'FILL_PASSWORD':
+        print("ERROR: fill 'MY_SUDO_PW' first to drop page caches")
+        sys.exit()
+    command = f'echo {MY_SUDO_PW} | sudo -S ' + 'sh -c "echo 1 > /proc/sys/vm/drop_caches"'
+    subprocess.call(command, shell=True)
+
+# tx.data is not bytecode
+#   -> https://www.rareskills.io/post/ethereum-contract-creation-code
+def generateAttackPayload(roundNum):
+
+    program: Program
+    datalayout: DataLayout
+    program = cg.balance_spam.generate(10)
+    datalayout = program.data_layout
+
+    for segment in datalayout:
+        if segment.opcode == opcode_values.BALANCE:
+            # Fill in the values for the instruction.
+            addr = generateRandomAddress()
+            segment.fill(int(addr, base=16))
+        elif segment.opcode == opcode_values.SLOAD:
+            pass
+            # hash = "01234" # TODO(jmlee)
+            # segment.fill(int(hash))
+
+    bytecode = program.to_bytes()
+    txdata = datalayout.implement()
+    print("bytecode len:", len(bytecode))
+    # brkgen.utils.dump_bytecode(bytecode, f'data/bytecode_{roundNum}.txt', human_readable=True)
+    # return bytecode, b''
+    return bytecode, txdata
+
+
+
+    # these are just sample values, implement this correctly later
+
+    # from bytes to str: use bytes.fromhex(SOME_HEX_STR)
+    # from str to bytes: use SOME_BYTES.hex()
+
+    # ex. for CA address: 0xCde4DE4d3baa9f2CB0253DE1b86271152fBf7864
+    deploytxdata = '60606040526040516102cd3803806102cd8339016040526060805160600190602001505b806001600050908051906020019082805482825590600052602060002090601f016020900481019282156071579182015b8281111560705782518260005055916020019190600101906054565b5b50905060989190607c565b8082111560945760008181506000905550600101607c565b5090565b50505b50610222806100ab6000396000f30060606040526000357c01000000000000000000000000000000000000000000000000000000009004806341c0e1b51461004f578063cfae32171461005c578063f1eae25c146100d55761004d565b005b61005a600450610110565b005b6100676004506101a4565b60405180806020018281038252838181518152602001915080519060200190808383829060006004602084601f0104600302600f01f150905090810190601f1680156100c75780820380516001836020036101000a031916815260200191505b509250505060405180910390f35b6100e06004506100e2565b005b33600060006101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908302179055505b565b600060009054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff1614156101a157600060009054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16ff5b5b565b60206040519081016040528060008152602001506001600050805480601f0160208091040260200160405190810160405280929190818152602001828054801561021357820191906000526020600020905b8154815290600101906020018083116101f657829003601f168201915b5050505050905061021f565b9056'
+    bytecodehex = '60606040526000357c01000000000000000000000000000000000000000000000000000000009004806341c0e1b51461004f578063cfae32171461005c578063f1eae25c146100d55761004d565b005b61005a600450610110565b005b6100676004506101a4565b60405180806020018281038252838181518152602001915080519060200190808383829060006004602084601f0104600302600f01f150905090810190601f1680156100c75780820380516001836020036101000a031916815260200191505b509250505060405180910390f35b6100e06004506100e2565b005b33600060006101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908302179055505b565b600060009054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff1614156101a157600060009054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16ff5b5b565b60206040519081016040528060008152602001506001600050805480601f0160208091040260200160405190810160405280929190818152602001828054801561021357820191906000526020600020905b8154815290600101906020018083116101f657829003601f168201915b5050505050905061021f565b9056'
+
+    bytecode = bytes.fromhex(bytecodehex)    
+    calltxdata = 'cfae3217'
+
+    txdata = bytes.fromhex(calltxdata)
+    print("txdata:", txdata)
+    return bytecode, txdata
+
+def simulateDoSAttack(attackerAddress, attackerBalance, contractAddr, bytecode):
+    cmd = str("simulateDoSAttack")
+    cmd += str(",")
+    cmd += str(attackerAddress)
+    cmd += str(",")
+    cmd += str(attackerBalance)
+    cmd += str(",")
+    cmd += str(contractAddr)
+    cmd += str(",")
+    cmd += str(bytecode)
+    cmd += ",@" # this cmd can be very large, so insert special char to check the end
+
+    client_socket.send(cmd.encode())
+    data = client_socket.recv(1024)
+    attackResults = list(map(int, data.decode().split(',')))
+    print("simulateDoSAttack result -> attackResults:", attackResults)
+    return attackResults
+
+def setStateRootAndTargetBlockNum(starBlockNum, endBlockNum, lastBlockNumToLoad, targetBlockNum):
+    cmd = str("setStateRootAndTargetBlockNum")
+    cmd += str(",")
+    cmd += str(starBlockNum)
+    cmd += str(",")
+    cmd += str(endBlockNum)
+    cmd += str(",")
+    cmd += str(lastBlockNumToLoad)
+    cmd += str(",")
+    cmd += str(targetBlockNum)
+
+    client_socket.send(cmd.encode())
+    data = client_socket.recv(1024)
+    result = data.decode()
+    # print("setStateRootAndTargetBlockNum result:", result)
+
+# TODO(jmlee): execute DoS attack contracts
+def simulateEthereumDoSAttack(lastKnownBlockNum, targetBlockNum):
+    print("run Ethereum DoS attack")
+
+    # set Ethereum mode
+    switchSimulationMode(0) # 0: Ethereum mode
+
+    # set simulation options for DoS attack
+    setSimulationOptions(False, 0, False)
+
+    # set current state root and target block number (= decide EVM version to run)
+    if targetBlockNum != 0:
+        print("set state root and target block num")
+        if targetBlockNum <= lastKnownBlockNum:
+            # target block is known, so set to its state
+            setStateRootAndTargetBlockNum(0, lastKnownBlockNum, targetBlockNum, targetBlockNum)
+        else:
+            # target block is unknown, so just set to known latest state (lastKnownBlockNum)
+            setStateRootAndTargetBlockNum(0, lastKnownBlockNum, lastKnownBlockNum, targetBlockNum)
+        # insert recent 256 block headers
+        for blockNum in range(max(0, targetBlockNum-300), targetBlockNum+1):
+            insertHeader(blockNum)
+
+    # set attacker's and attack contract's accounts
+    attackerAddress = "8b0725a76aff1bdcd64a005b44a736096221ccf3" # a random address that has never appeared before
+    attackerBalance = 10000000*10**18 # 10M ETH
+    contractAddr = "9e2e9e69723ebb0566d8741056acb1cb894d850d" # a random address that has never appeared before
+
+    # set call tx
+    callTx = dict()
+    callTx['from'] = bytes.fromhex(attackerAddress)
+    callTx['to'] = bytes.fromhex(contractAddr)
+    callTx['gas'] = 30000000 # large enough tx gas limit for attack
+    # callTx['gasprice'] = 0
+    callTx['gasprice'] = None
+    callTx['value'] = 0
+    callTx['nonce'] = 0 # TODO(jmlee): wrong nonce value does not block tx execution, but correct this later
+    # callTx['maxfeepergas'] = None
+    callTx['maxfeepergas'] = 4236941740
+    callTx['maxpriorityfeepergas'] = None
+
+    # run rounds to execute attack contract
+    totalRoundNum = 10000000000
+    startTime = datetime.now()
+    for roundNum in range(totalRoundNum):
+        print("\n***start round", roundNum)
+
+        #
+        # generate attack contract's bytecode and tx.data as args
+        #
+        print("***gen attack contract and tx data")
+        bytecode, txdata = generateAttackPayload(roundNum)
+
+        #
+        # set call tx's input data
+        #
+        print("***set call tx")
+        callTx['input'] = txdata
+
+        #
+        # clear caches before executing contract
+        # 
+        dropPageCaches() # drop page caches
+        setDatabase(False) # reopen geth's database such as LevelDB
+
+        #
+        # execute attack tx and get execution time
+        #
+        print("***execute call tx")
+        # insertTransactionArgsList(targetBlockNum) # insert normal txs before attack tx
+        insertTransactionArgs(callTx)
+        attackResults = simulateDoSAttack(attackerAddress, attackerBalance, contractAddr, bytecode.hex())
+        print("  # of executed opcodes:", attackResults[0])
+        print("  opcode execution time:", f'{attackResults[1]:,}', "ns")
+        print("  execution time per opcode:", f'{int(attackResults[1]/attackResults[0]):,}', "ns")
+        print("  tx execution time:", f'{attackResults[2]:,}', "ns")
+        print("  opcode gas cost:", attackResults[3], "gas")
+        print("  tx gas cost:", attackResults[4], "gas")
+
+        # 
+        # TODO(jmlee): give fitness value to Genetic Algorithm process
+        #
+        fitness: float = attackResults[4] / (attackResults[1]/1e9 + 1e-12) # gas/sec
+        print(f'  FITNESS: {fitness}')
+        my_conn.send(fitness)
+
+    # simulation finished
+    print("\nfinish Ethereum DoS attack simulation V2")
+    print("elapsed time:", datetime.now()-startTime)
+    sys.exit()
+
+# TODO(jmlee): execute read attack contracts
+def simulateEthereumReadAttack(lastKnownBlockNum, targetBlockNum, BlockNumToRun):
+    print("run Ethereum read attack")
+
+    # set Ethereum mode
+    switchSimulationMode(0) # 0: Ethereum mode
+
+    # set simulation options for DoS attack
+    setSimulationOptions(False, 0, False)
+
+    # set current state root and target block number (= decide EVM version to run)
+    if targetBlockNum != 0:
+        print("set state root and target block num")
+        if targetBlockNum <= lastKnownBlockNum:
+            # target block is known, so set to its state
+            setStateRootAndTargetBlockNum(0, lastKnownBlockNum, targetBlockNum, targetBlockNum)
+        else:
+            # target block is unknown, so just set to known latest state (lastKnownBlockNum)
+            setStateRootAndTargetBlockNum(0, lastKnownBlockNum, lastKnownBlockNum, targetBlockNum)
+        # insert recent 256 block headers
+        for blockNum in range(max(0, targetBlockNum-300), targetBlockNum+1):
+            insertHeader(blockNum)
+
+    # set attacker's and attack contract's accounts
+    attackerAddress = "8b0725a76aff1bdcd64a005b44a736096221ccf3" # a random address that has never appeared before
+    attackerBalance = 10000000*10**18 # 10M ETH
+    contractAddr = "9e2e9e69723ebb0566d8741056acb1cb894d850d" # a random address that has never appeared before
+
+    # set call tx
+    callTx = dict()
+    callTx['from'] = bytes.fromhex(attackerAddress)
+    callTx['to'] = bytes.fromhex(contractAddr)
+    callTx['gas'] = 30000000 # large enough tx gas limit for attack
+    # callTx['gasprice'] = 0
+    callTx['gasprice'] = None
+    callTx['value'] = 0
+    callTx['nonce'] = 0 # TODO(jmlee): wrong nonce value does not block tx execution, but correct this later
+    # callTx['maxfeepergas'] = None
+    callTx['maxfeepergas'] = 4236941740
+    callTx['maxpriorityfeepergas'] = None
+
+    # run rounds to execute attack contract
+    totalRoundNum = 10000000000
+    startTime = datetime.now()
+    for roundNum in range(totalRoundNum):
+        print("\n***start round", roundNum)
+
+        #
+        # generate attack contract's bytecode and tx.data as args
+        #
+        print("***gen attack contract and tx data")
+        bytecode, txdata = generateAttackPayload(roundNum)
+
+        #
+        # set call tx's input data
+        #
+        print("***set call tx")
+        callTx['input'] = txdata
+
+        #
+        # clear caches before executing contract
+        # 
+        dropPageCaches() # drop page caches
+        setDatabase(False) # reopen geth's database such as LevelDB
+
+        #
+        # execute attack tx and get execution time
+        #
+        print("***execute call tx")
+        # insertTransactionArgsList(targetBlockNum) # insert normal txs before attack tx
+        insertTransactionArgs(callTx)
+        attackResults = simulateDoSAttack(attackerAddress, attackerBalance, contractAddr, bytecode.hex())
+        print("  # of executed opcodes:", attackResults[0])
+        print("  opcode execution time:", f'{attackResults[1]:,}', "ns")
+        print("  execution time per opcode:", f'{int(attackResults[1]/attackResults[0]):,}', "ns")
+        print("  tx execution time:", f'{attackResults[2]:,}', "ns")
+        print("  opcode gas cost:", attackResults[3], "gas")
+        print("  tx gas cost:", attackResults[4], "gas")
+
+        # 
+        # TODO(jmlee): give fitness value to Genetic Algorithm process
+        #
+        fitness: float = attackResults[4] / (attackResults[1]/1e9 + 1e-12) # gas/sec
+        print(f'  FITNESS: {fitness}')
+        my_conn.send(fitness)
+
+    # simulation finished
+    print("\nfinish Ethereum read attack simulation V2")
+    print("elapsed time:", datetime.now()-startTime)
+    sys.exit()
 
 # replay txs in Ethereum through EVM to simulate Ethanos
 def simulateEthanosEVM(startBlockNum, endBlockNum, sweepEpoch, fromLevel, temp_result_save_inteval):
@@ -1624,6 +1958,45 @@ if __name__ == "__main__":
     # optional: merge simblocks for Ethane
     # mergeSimBlocks(10000000, temp_result_save_inteval, deleteEpoch, inactivateEpoch, inactivateCriterion, fromLevel)
     # sys.exit(1)
+
+    # optional: mimic sync
+    # ethereumTH trie at 5M: 0x004c4b40f7af27f30c2128f3aba8055eb25d73e4545628e7cc2af0a7c6e972a6
+    # setDatabase(deleteDisk)
+    # benchmarkSync("0x004c4b3fe2fe5730a95d8e09274d0cc5e43d27fc62f3924f41f0c325e983f23d")
+    # sys.exit(1)
+
+
+
+    # inspect and copy state
+    # ethereum 100,000: 0x209230089ff328b2d87b721c48dbede5fd163c3fae29920188a7118275ab2013
+    # ethereum 0.01M: 0x4de830f589266773eae1a1caa88d75def3f3a321fbd9aeb89570a57c6e7f3dbb
+    # ethereum 0.5M: 0xb2bcfa2ffe869085c84a976435f1581a7a0eb7af64bafcbbda710661016aa3ab
+    # ethereum 1M: 0x0e066f3c2297a5cb300593052617d1bca5946f0caa0635fdb1b85ac7e5236f34
+    # ethereum 3M: 0x8e7ab0771fa333e1369fd48374010b8a21283a70690c6064fe2ecf091a1719ec
+    # ethereum 5M: 0x6092dfd6bcdd375764d8718c365ce0e8323034da3d3b0c6d72cf7304996b86ad
+    # ethereum 5.58M: 0x25ab955eb900ba009ab336533ea209a4880d3fcab044abc893a611d6ba21257d
+    # copyStateHash = True
+    # copyStateHashSnap = True
+    # copyStatePath = False
+    # copyStatePathSnap = False
+    # setDatabase(False)
+    # inspectAndCopyState("0x0e066f3c2297a5cb300593052617d1bca5946f0caa0635fdb1b85ac7e5236f34", copyStateHash, copyStateHashSnap, copyStatePath, copyStatePathSnap)
+    # inspectAndCopyState("0x8e7ab0771fa333e1369fd48374010b8a21283a70690c6064fe2ecf091a1719ec", copyStateHash, copyStateHashSnap, copyStatePath, copyStatePathSnap)
+    # inspectAndCopyState("0xe7a73d3c05829730c750ca483b5a65f8321adb25d8abb9da23a4cbb6473464ee", copyStateHash, copyStateHashSnap, copyStatePath, copyStatePathSnap)
+    # inspectAndCopyState("0x6092dfd6bcdd375764d8718c365ce0e8323034da3d3b0c6d72cf7304996b86ad", copyStateHash, copyStateHashSnap, copyStatePath, copyStatePathSnap)
+    # inspectAndCopyState("0x25ab955eb900ba009ab336533ea209a4880d3fcab044abc893a611d6ba21257d", copyStateHash, copyStateHashSnap, copyStatePath, copyStatePathSnap)
+    # sys.exit()
+
+
+
+    # DoS attack simulation
+    # simulateEthereumDoSAttack(5600000, 5580000) # byzantium
+    # simulateEthereumDoSAttack(5600000, 12250000) # berlin
+    # simulateEthereumDoSAttack(5600000, 15550000) # paris
+    # simulateEthereumDoSAttack(5600000, 17000000)
+
+    # TODO(jmlee): call this function
+    # setSimulationOptions(enableSnapshot, trieNodePrefixLen, loggingOpcodeStats)
 
     # run simulation
     setDatabase(deleteDisk)

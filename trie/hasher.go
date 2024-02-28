@@ -17,12 +17,23 @@
 package trie
 
 import (
+	"encoding/binary"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/crypto/sha3"
 )
+
+// for prefixing trie node hashes
+var (
+	CurrentBlockNum = uint64(0)
+)
+
+func SetCurrentBlockNum(blockNum uint64) {
+	CurrentBlockNum = blockNum
+}
 
 // hasher is a type used for the trie Hash operation. A hasher has some
 // internal preallocated temp space
@@ -70,6 +81,13 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 		// small to be hashed
 		if hn, ok := hashed.(hashNode); ok {
 			cached.flags.hash = hn
+
+			if common.EnableNodePrefixing {
+				modifiedHash := modifyHash(n, hn, CurrentBlockNum)
+				cached.flags.hash = modifiedHash
+				hashed = modifiedHash
+			}
+
 		} else {
 			cached.flags.hash = nil
 		}
@@ -79,6 +97,13 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 		hashed = h.fullnodeToHash(collapsed, force)
 		if hn, ok := hashed.(hashNode); ok {
 			cached.flags.hash = hn
+
+			if common.EnableNodePrefixing {
+				modifiedHash := modifyHash(n, hn, CurrentBlockNum)
+				cached.flags.hash = modifiedHash
+				hashed = modifiedHash
+			}
+
 		} else {
 			cached.flags.hash = nil
 		}
@@ -86,6 +111,23 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 	default:
 		// Value and hash nodes don't have children so they're left as were
 		return n, n
+	}
+}
+
+// modifyHash returns a new hashNode without finding proper nonce (jmlee)
+// just overlap the hash prefix with what we want
+func modifyHash(n node, hash hashNode, blockNum uint64) hashNode {
+	bs := make([]byte, 8)
+	binary.BigEndian.PutUint64(bs, blockNum)
+
+	newHash := hashNode(hash)
+	copy(newHash, hash)
+	switch n.(type) {
+	case *shortNode, *fullNode:
+		copy(newHash[:common.PrefixLength], bs[8-common.PrefixLength:])
+		return newHash
+	default:
+		return nil
 	}
 }
 

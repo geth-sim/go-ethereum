@@ -100,6 +100,7 @@ func (dl *diskLayer) AccountRLP(hash common.Hash) ([]byte, error) {
 	// If we're in the disk layer, all diff layers missed
 	snapshotDirtyAccountMissMeter.Mark(1)
 
+	// TODO(jmlee): measure cache stats for snapshot
 	// Try to retrieve the account from the memory cache
 	if blob, found := dl.cache.HasGet(nil, hash[:]); found {
 		snapshotCleanAccountHitMeter.Mark(1)
@@ -140,6 +141,7 @@ func (dl *diskLayer) Storage(accountHash, storageHash common.Hash) ([]byte, erro
 	// If we're in the disk layer, all diff layers missed
 	snapshotDirtyStorageMissMeter.Mark(1)
 
+	// TODO(jmlee): measure cache stats for snapshot
 	// Try to retrieve the storage slot from the memory cache
 	if blob, found := dl.cache.HasGet(nil, key); found {
 		snapshotCleanStorageHitMeter.Mark(1)

@@ -1,6 +1,11 @@
 package common
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+	"strconv"
 	"time"
 )
 
@@ -18,6 +23,23 @@ var (
 
 	// simulation results, SimBlocks[blockNumStr] = SimBlock
 	SimBlocks = make(map[string]*SimBlock)
+
+	// enable snapshot or not
+	EnableSnapshot = true
+
+	// prefixing trie node's hash value with block number
+	EnableNodePrefixing = false
+	// actually, this may be prefix bytes (ex. PrefixLength = 3 -> prefixes 6 characters)
+	PrefixLength = 0
+
+	// opcode stats (opcode execution num/time/cost)
+	LoggingOpcodeStats = true
+	OpcodeStats        = make(map[string]*OpcodeStat)
+	CurrentOpcodeStat  = NewOpcodeStat()
+
+	// flag for DoS attack
+	IsDoSAttacking    = false
+	CurrentAttackStat = NewAttackStat()
 
 	//
 	// Ethanos
@@ -42,6 +64,32 @@ var (
 	ZeroHash = Hash{}
 	MaxHash  = HexToHash("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 )
+
+// return simulation mode and its options
+func GetSimulationTypeName() string {
+	// simulation mode name
+	name := SimulationModeNames[SimulationMode]
+
+	// enable node prefixing: N
+	if EnableNodePrefixing {
+		name += "N"
+	}
+
+	// logging opcode stats: O
+	if LoggingOpcodeStats {
+		name += "O"
+	}
+
+	// TODO(jmlee): implement path-based scheme
+	// enable path-based: P
+
+	// enable snapshot: S
+	if EnableSnapshot {
+		name += "S"
+	}
+
+	return name
+}
 
 // store simulation results as a block with performance metrics
 type SimBlock struct {
@@ -122,3 +170,150 @@ var (
 	AccountDeleted int
 	StorageDeleted int
 )
+
+// Result of executing DoS attack contract
+type AttackStat struct {
+	// these are arranged in order of opcode execution
+	OpcodeNames       []string
+	ExecutionTimes    []int64
+	GasCosts          []uint64
+	RefundAmount      uint64 // refunded gas amount due to SSTORE, SELFDESTRUCT
+	StartingGasCost   uint64
+	TxDataGasCost     uint64
+	AccessListGasCost uint64
+
+	// TODO(jmlee): need this? (# of executing interpreter.Run())
+	ContractCallNum uint64
+
+	// TODO(jmlee): implement this later for storage attack
+	IncTrieNodeNum  uint64
+	IncTrieNodeSize uint64
+}
+
+func NewAttackStat() *AttackStat {
+	as := new(AttackStat)
+	as.OpcodeNames = make([]string, 0)
+	as.ExecutionTimes = make([]int64, 0)
+	as.GasCosts = make([]uint64, 0)
+	return as
+}
+
+// store opcode related stat
+type OpcodeStat struct {
+	StartBlockNum uint64
+	EndBlockNum   uint64
+
+	ContractCallNum uint64
+
+	OpcodeNums     map[string]int64
+	OpcodeExecutes map[string]int64
+	OpcodeCosts    map[string]uint64
+}
+
+func NewOpcodeStat() *OpcodeStat {
+	os := new(OpcodeStat)
+	os.OpcodeNums = make(map[string]int64)
+	os.OpcodeExecutes = make(map[string]int64)
+	os.OpcodeCosts = make(map[string]uint64)
+	return os
+}
+
+func (ops *OpcodeStat) Add(otherOS *OpcodeStat) {
+
+	if ops.StartBlockNum == 0 && ops.EndBlockNum == 0 {
+		ops.StartBlockNum = otherOS.StartBlockNum
+	} else if ops.EndBlockNum+1 != otherOS.StartBlockNum {
+		fmt.Println("ERROR: cannot add these cache stats")
+		fmt.Println("os.EndBlockNum:", ops.EndBlockNum)
+		fmt.Println("otherOS.StartBlockNum:", otherOS.StartBlockNum)
+		os.Exit(1)
+	}
+	ops.EndBlockNum = otherOS.EndBlockNum
+
+	ops.ContractCallNum += otherOS.ContractCallNum
+
+	for k, v := range otherOS.OpcodeNums {
+		ops.OpcodeNums[k] += v
+		ops.OpcodeExecutes[k] += otherOS.OpcodeExecutes[k]
+		ops.OpcodeCosts[k] += otherOS.OpcodeCosts[k]
+	}
+}
+
+func (os *OpcodeStat) Print() {
+	fmt.Println("print OpcodeStat -> start block num:", os.StartBlockNum, "/ end block num:", os.EndBlockNum)
+	fmt.Println("  contract call tx num:", os.ContractCallNum)
+
+	mapKeys := make([]string, 0)
+	for k, _ := range os.OpcodeNums {
+		mapKeys = append(mapKeys, k)
+	}
+	sort.Strings(mapKeys)
+	for _, opcode := range mapKeys {
+		fmt.Println("  opcode:", opcode)
+		fmt.Println("    -> avg:", uint64(os.OpcodeExecutes[opcode])/os.OpcodeCosts[opcode], "ns/gas ( num:", os.OpcodeNums[opcode], "/ execute time:", os.OpcodeExecutes[opcode], "ns / gas cost:", os.OpcodeCosts[opcode], ")")
+	}
+}
+
+func PrintTotalOpcodeStat() {
+
+	totalOpcodeStat := NewOpcodeStat()
+
+	mapKeys := make([]string, 0)
+	for k, _ := range OpcodeStats {
+		mapKeys = append(mapKeys, k)
+	}
+	sort.Strings(mapKeys)
+	for _, endBlockNum := range mapKeys {
+		opcodeStat := OpcodeStats[endBlockNum]
+
+		totalOpcodeStat.Add(opcodeStat)
+		// opcodeStat.Print()
+	}
+
+	fmt.Println("print total opcode stats")
+	totalOpcodeStat.Print()
+}
+
+func SaveOpcodeStat(endBlockNum uint64) {
+	CurrentOpcodeStat.EndBlockNum = endBlockNum
+
+	blockNumStr := fmt.Sprintf("%08d", endBlockNum)
+	OpcodeStats[blockNumStr] = CurrentOpcodeStat
+}
+
+func ResetOpcodeStat(startBlockNum uint64) {
+	fmt.Println("ResetOpcodeStat() executed")
+
+	CurrentOpcodeStat = NewOpcodeStat()
+	CurrentOpcodeStat.StartBlockNum = startBlockNum
+}
+
+// save OpcodeStats as a json file
+func SaveOpcodeLogs(filePath string) {
+	// encoding map to json
+	var jsonData []byte
+	var err error
+
+	// save all CacheStats at once
+	jsonData, err = json.MarshalIndent(OpcodeStats, "", "  ")
+	if err != nil {
+		fmt.Println("JSON marshaling error:", err)
+		return
+	}
+
+	// save as a json file
+	mapKeys := make([]string, 0)
+	for k, _ := range OpcodeStats {
+		mapKeys = append(mapKeys, k)
+	}
+	sort.Strings(mapKeys)
+	firstBlockNum := OpcodeStats[mapKeys[0]].StartBlockNum
+	lastBlockNum := OpcodeStats[mapKeys[len(mapKeys)-1]].EndBlockNum
+	fileName := "opcode_stats_" + GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + ".json"
+	err = os.WriteFile(filePath+fileName, jsonData, 0644)
+	if err != nil {
+		fmt.Println("File write error:", err)
+		return
+	}
+	fmt.Println("  saved file name:", fileName)
+}
