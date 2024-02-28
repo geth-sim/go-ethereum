@@ -129,19 +129,20 @@ type StateDB struct {
 	nextRevisionId int
 
 	// Measurements gathered during execution for debugging purposes
-	AccountReadNum       int // how many account read occurs (jmlee)
-	AccountReads         time.Duration
-	AccountHashes        time.Duration
-	AccountUpdates       time.Duration
-	AccountCommits       time.Duration
-	StorageReads         time.Duration
-	StorageHashes        time.Duration
-	StorageUpdates       time.Duration
-	StorageCommits       time.Duration
-	SnapshotAccountReads time.Duration
-	SnapshotStorageReads time.Duration
-	SnapshotCommits      time.Duration
-	TrieDBCommits        time.Duration
+	AccountReadNum         int // how many account read occurs (jmlee)
+	NonExistAccountReadNum int // # of reads to find non-exist account
+	AccountReads           time.Duration
+	AccountHashes          time.Duration
+	AccountUpdates         time.Duration
+	AccountCommits         time.Duration
+	StorageReads           time.Duration
+	StorageHashes          time.Duration
+	StorageUpdates         time.Duration
+	StorageCommits         time.Duration
+	SnapshotAccountReads   time.Duration
+	SnapshotStorageReads   time.Duration
+	SnapshotCommits        time.Duration
+	TrieDBCommits          time.Duration
 
 	AccountUpdated int
 	StorageUpdated int
@@ -758,6 +759,9 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		if err == nil {
 			if acc == nil {
 				// searched snapshot but account does not exist
+				if metrics.EnabledExpensive {
+					s.NonExistAccountReadNum++
+				}
 				return nil
 			}
 			// searched snapshot and found account
@@ -788,6 +792,9 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 			return nil
 		}
 		if data == nil {
+			if metrics.EnabledExpensive {
+				s.NonExistAccountReadNum++
+			}
 			return nil
 		}
 	}
@@ -815,6 +822,9 @@ func (s *StateDB) getDeletedStateObjectEthanos(addr common.Address) *stateObject
 	// 	}
 	// 	if err == nil {
 	// 		if acc == nil {
+	// 			if metrics.EnabledExpensive {
+	// 				s.NonExistAccountReadNum++
+	// 			}
 	// 			return nil
 	// 		}
 	// 		data = &types.StateAccount{
@@ -871,6 +881,9 @@ func (s *StateDB) getDeletedStateObjectEthanos(addr common.Address) *stateObject
 				return nil
 			}
 			if data == nil {
+				if metrics.EnabledExpensive {
+					s.NonExistAccountReadNum++
+				}
 				return nil
 			}
 		}
@@ -878,6 +891,9 @@ func (s *StateDB) getDeletedStateObjectEthanos(addr common.Address) *stateObject
 		if data.Root == common.DeletedContractRoot {
 			// Ethanos does not delete CA, but just set invalid Root value
 			// this account is deleted account, so ignore it
+			if metrics.EnabledExpensive {
+				s.NonExistAccountReadNum++
+			}
 			return nil
 		}
 
@@ -912,6 +928,9 @@ func (s *StateDB) getDeletedStateObjectEthane(addr common.Address) *stateObject 
 	// 	}
 	// 	if err == nil {
 	// 		if acc == nil {
+	// 			if metrics.EnabledExpensive {
+	// 				s.NonExistAccountReadNum++
+	// 			}
 	// 			return nil
 	// 		}
 	// 		data = &types.StateAccount{
@@ -983,6 +1002,9 @@ func (s *StateDB) getDeletedStateObjectEthane(addr common.Address) *stateObject 
 			// 	s.VoidAccountReadNum++
 			// }
 
+			if metrics.EnabledExpensive {
+				s.NonExistAccountReadNum++
+			}
 			return nil
 		}
 
@@ -2009,6 +2031,7 @@ func (s *StateDB) SaveMeters(simBlock *common.SimBlock) {
 	//
 	simBlock.AccountReads = s.AccountReads
 	simBlock.AccountReadNum = s.AccountReadNum
+	simBlock.NonExistAccountReadNum = s.NonExistAccountReadNum
 	simBlock.AccountHashes = s.AccountHashes
 	simBlock.AccountUpdates = s.AccountUpdates
 	simBlock.AccountCommits = s.AccountCommits
@@ -2035,6 +2058,7 @@ func (s *StateDB) SaveMeters(simBlock *common.SimBlock) {
 	//
 	// Ethane metrics
 	//
+	simBlock.ActiveIndexReads = s.ActiveIndexReads
 	simBlock.VoidAccountReadNum = s.VoidAccountReadNum
 	simBlock.VoidAccountReads = s.VoidAccountReads
 	simBlock.DeleteNum = s.DeleteNum

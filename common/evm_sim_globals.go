@@ -57,26 +57,28 @@ type SimBlock struct {
 	// contract call tx num & execution time
 	CallTxLen      uint64
 	CallTxExecutes time.Duration
+	GasUsed        uint64
 
 	// from StateDB struct
 	// Measurements gathered during execution for debugging purposes
-	AccountReads         time.Duration
-	AccountReadNum       int
-	AccountHashes        time.Duration
-	AccountUpdates       time.Duration
-	AccountCommits       time.Duration
-	StorageReads         time.Duration
-	StorageHashes        time.Duration
-	StorageUpdates       time.Duration
-	StorageCommits       time.Duration
-	SnapshotAccountReads time.Duration
-	SnapshotStorageReads time.Duration
-	SnapshotCommits      time.Duration
-	TrieDBCommits        time.Duration
-	AccountUpdated       int
-	StorageUpdated       int
-	AccountDeleted       int
-	StorageDeleted       int
+	AccountReads           time.Duration
+	AccountReadNum         int
+	NonExistAccountReadNum int
+	AccountHashes          time.Duration
+	AccountUpdates         time.Duration
+	AccountCommits         time.Duration
+	StorageReads           time.Duration
+	StorageHashes          time.Duration
+	StorageUpdates         time.Duration
+	StorageCommits         time.Duration
+	SnapshotAccountReads   time.Duration
+	SnapshotStorageReads   time.Duration
+	SnapshotCommits        time.Duration
+	TrieDBCommits          time.Duration
+	AccountUpdated         int
+	StorageUpdated         int
+	AccountDeleted         int
+	StorageDeleted         int
 
 	DiskSize         int64         // disk usage (i.e., result of du -b)
 	DiskCommits      time.Duration // flush time to disk
@@ -98,6 +100,7 @@ type SimBlock struct {
 	CachedAccountReadNum int
 
 	// for Ethane
+	ActiveIndexReads   time.Duration
 	VoidAccountReadNum int
 	VoidAccountReads   time.Duration // for fair comparison, Ethane reads random account when desired account does not exist
 	// do not measure commit times independently for deletion and inactivation

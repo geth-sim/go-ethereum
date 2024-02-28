@@ -142,6 +142,7 @@ func connHandler(conn net.Conn) {
 				header.Difficulty = big.NewInt(difficulty)
 				gasUsed, _ := strconv.ParseUint(params[5], 10, 64)
 				header.GasUsed = gasUsed
+				header.GasUsed = 0 // TODO(jmlee): this should be 0, do not send this from python client
 				gasLimit, _ := strconv.ParseUint(params[6], 10, 64)
 				header.GasLimit = gasLimit
 				header.Extra = common.Hex2Bytes(params[7])
@@ -493,6 +494,7 @@ func connHandler(conn net.Conn) {
 					// fmt.Println("inter state root:", newStateRoot.Hex())
 					// newTrie.Print()
 				}
+				simBlock.GasUsed = header.GasUsed
 
 				//
 				// block reward + uncle rewards
