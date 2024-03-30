@@ -140,7 +140,7 @@ func setDatabase(deleteDisk bool) {
 	}
 	stateCache = state.NewDatabaseWithConfig(frdiskdb, &trie.Config{
 		Cache:     trieCacheSize, // default depends on gcmode -> "full": 614, "archive": 1228
-		Preimages: true,          // default: true
+		Preimages: false,         // default: false
 	})
 	mainTrieDB = stateCache.TrieDB()
 	subTrieDB = mainTrieDB
@@ -148,7 +148,7 @@ func setDatabase(deleteDisk bool) {
 	// independent trie db with independent cache for fair performance comparison
 	indepTrieDB = trie.NewDatabaseWithConfig(frdiskdb, &trie.Config{
 		Cache:     trieCacheSize, // default depends on gcmode -> "full": 614, "archive": 1228
-		Preimages: true,          // default: true
+		Preimages: false,         // default: false
 	})
 
 	// subNormTrieDB = trie.NewDatabaseWithConfig(diskdb, &trie.Config{Cache: trieCacheSize}) // if want to split clean caches
