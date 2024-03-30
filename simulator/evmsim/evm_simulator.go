@@ -2,12 +2,14 @@ package evmsim
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -56,7 +58,7 @@ var (
 	//
 	big8                   = big.NewInt(8)
 	big32                  = big.NewInt(32)
-	diskSizeMeasureEpoch   = uint64(200000)
+	diskSizeMeasureEpoch   = uint64(500000)
 	diskSizeMeasureCnt     = 0
 	diskSizeMeasureElapsed time.Duration
 )
@@ -660,14 +662,14 @@ func connHandler(conn net.Conn) {
 				// measure disk usage
 				if currentBlockNum%diskSizeMeasureEpoch == 0 {
 					fmt.Println("try to get disk size")
+					fmt.Println("  total cnt:", diskSizeMeasureCnt)
+					fmt.Println("  total elapsed:", diskSizeMeasureElapsed)
 					cnt := 0
 					start := time.Now()
 					for {
 						cnt++
-						size, err := getDirectorySize(leveldbPath)
+						size, err := getDirectorySizeV2(leveldbPath)
 						if err != nil {
-							// fmt.Println("Error at getDirectorySize():", err)
-							// fmt.Println("  this is", cnt, "th try")
 							time.Sleep(3 * time.Second)
 							continue
 						}
@@ -1484,6 +1486,38 @@ func getDirectorySize(path string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return size, nil
+}
+
+// get directory size from "du -b" command
+func getDirectorySizeV2(path string) (int64, error) {
+	// call "du -b" command
+	cmd := exec.Command("du", "-b", path)
+	stdout, err := cmd.Output()
+	if err != nil {
+		fmt.Println("exec.Command's Output err:", err)
+		fmt.Println("  stdout:", string(stdout))
+		// this err can be ignored
+		// return 0, err
+	}
+	fmt.Println(string(stdout))
+
+	results := strings.Fields(string(stdout))
+	fmt.Println("results:", results)
+	if len(results) < 2 {
+		fmt.Println("ERROR: du -b result is wierd")
+		return 0, errors.New("du -b result is wierd")
+	}
+
+	sizeStr := results[len(results)-2]
+	fmt.Println("sizeStr:", sizeStr)
+
+	size, err := strconv.ParseInt(sizeStr, 10, 64)
+	if err != nil {
+		fmt.Println("strconv.ParseInt err:", err)
+		return 0, err
+	}
+	fmt.Println("size:", size, "B")
 	return size, nil
 }
 
