@@ -136,11 +136,6 @@ func restoreEthanosAddrs(simBlock *common.SimBlock) {
 					}
 					simBlock.RestoreUpdates += time.Since(start)
 
-					// trie hashing
-					start = time.Now()
-					currentTrie.Hash()
-					simBlock.RestoreHashes += time.Since(start)
-
 					// fmt.Println("  success restore -> addr:", addr.Hex())
 					// fmt.Println("cachedTrieRoots:", cachedTrieRoots)
 					// fmt.Println("find account at", i, "index checkpoint trie:", cachedTrieRoots[i])
@@ -261,6 +256,4 @@ func restoreEthanosAddrs(simBlock *common.SimBlock) {
 
 	currentStateRoot = newStateRoot
 	// fmt.Println("finish restoration -> current root:", currentStateRoot.Hex())
-
-	return
 }

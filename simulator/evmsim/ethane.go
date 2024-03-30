@@ -2,7 +2,6 @@ package evmsim
 
 import (
 	"fmt"
-	"math/rand"
 	"os"
 	"strconv"
 	"time"
@@ -275,13 +274,6 @@ func restoreEthaneAddrsV2(simBlock *common.SimBlock) {
 				fmt.Println("  err:", err)
 				os.Exit(1)
 			}
-		} else {
-			// void read for fair comparison
-			start := time.Now()
-			randomNumber := uint64(rand.Int63n(int64(common.NextKey)))
-			randomAddrKey := common.HexToHash(strconv.FormatUint(randomNumber, 16))
-			activeTrie.Get(randomAddrKey[:])
-			simBlock.RestoreSubReads += time.Since(start)
 		}
 
 		// restore inactive account
@@ -304,11 +296,6 @@ func restoreEthaneAddrsV2(simBlock *common.SimBlock) {
 			// fmt.Println("  success restore -> addr:", addr.Hex())
 			// restoreSuccess = true
 			restoredNum++
-
-			// trie hashing
-			start = time.Now()
-			activeTrie.Hash()
-			simBlock.RestoreHashes += time.Since(start)
 		}
 
 		// // if restoration failed, write error log
@@ -382,6 +369,4 @@ func restoreEthaneAddrsV2(simBlock *common.SimBlock) {
 
 	currentStateRoot = newStateRoot
 	// fmt.Println("finish restoration -> current root:", currentStateRoot.Hex())
-
-	return
 }
