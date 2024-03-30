@@ -1822,8 +1822,9 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 func (s *StateDB) DeletePreviousAccounts() {
 
 	// there is no previous accounts, thus no need to delete
-	if len(common.KeysToDelete) == 0 {
-		fmt.Println("DeletePreviousAccounts() -> deleted accounts num:", len(common.KeysToDelete))
+	deleteNum := len(common.KeysToDelete)
+	if deleteNum == 0 {
+		fmt.Println("DeletePreviousAccounts() -> deleted accounts num:", deleteNum)
 		return
 	}
 
@@ -1835,9 +1836,10 @@ func (s *StateDB) DeletePreviousAccounts() {
 			os.Exit(1)
 		}
 	}
+	common.KeysToDelete = make([]common.Hash, 0)
 	if metrics.EnabledExpensive {
 		s.DeleteUpdates += time.Since(start)
-		s.DeleteNum += len(common.KeysToDelete)
+		s.DeleteNum += deleteNum
 	}
 
 	start = time.Now()
@@ -1846,8 +1848,7 @@ func (s *StateDB) DeletePreviousAccounts() {
 		s.DeleteHashes += time.Since(start)
 	}
 
-	fmt.Println("DeletePreviousAccounts() -> deleted accounts num:", len(common.KeysToDelete))
-	common.KeysToDelete = make([]common.Hash, 0)
+	fmt.Println("DeletePreviousAccounts() -> deleted accounts num:", deleteNum)
 }
 
 // inactivates all old accounts in active trie for Ethane (jmlee)
@@ -1861,9 +1862,9 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	originalInactiveRoot := common.InactiveTrieRoot
 	inactiveNextKey := s.subTrie.GetLastKey().Uint64() + 1
 	inactivatedAccNum := 0
+	start := time.Now()
 	for {
 		// try to delete the leftmost account (whose key should be less than last key to check)
-		start := time.Now()
 		err, enc := s.trie.TryDeleteLeft(lastKeyToCheck[:])
 		if enc != nil {
 			// success delete, then move the account to inactive trie
@@ -1913,7 +1914,7 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	//
 
 	deletedProofNum := len(common.RestoredKeys)
-	start := time.Now()
+	start = time.Now()
 	for _, key := range common.RestoredKeys {
 		if err := s.subTrie.Update(key[:], nil); err != nil {
 			s.setError(fmt.Errorf("updateStateObject (%x) error: %v", key[:], err))
