@@ -488,6 +488,7 @@ func TestFullAPI(t *testing.T) {
 }
 
 func setupBlocks(t *testing.T, ethservice *eth.Ethereum, n int, parent *types.Header, callback func(parent *types.Header), withdrawals [][]*types.Withdrawal) []*types.Header {
+	fmt.Println("setupBlocks() is called -----------------------------------------") 
 	api := NewConsensusAPI(ethservice)
 	var blocks []*types.Header
 	for i := 0; i < n; i++ {
@@ -1040,6 +1041,7 @@ func TestSimultaneousNewBlock(t *testing.T) {
 // TestWithdrawals creates and verifies two post-Shanghai blocks. The first
 // includes zero withdrawals and the second includes two.
 func TestWithdrawals(t *testing.T) {
+	fmt.Println("GETH: api_test.go TestWithdrawals() is called -----------------------------------------")
 	genesis, blocks := generateMergeChain(10, true)
 	// Set shanghai time to last block + 5 seconds (first post-merge block)
 	time := blocks[len(blocks)-1].Time() + 5
@@ -1156,6 +1158,7 @@ func TestWithdrawals(t *testing.T) {
 }
 
 func TestNilWithdrawals(t *testing.T) {
+	fmt.Println("GETH: api_test.go TestNilWithdrawals() is called -----------------------------------------")
 	genesis, blocks := generateMergeChain(10, true)
 	// Set shanghai time to last block + 4 seconds (first post-merge block)
 	time := blocks[len(blocks)-1].Time() + 4
@@ -1562,6 +1565,7 @@ func TestBlockToPayloadWithBlobs(t *testing.T) {
 
 // This checks that beaconRoot is applied to the state from the engine API.
 func TestParentBeaconBlockRoot(t *testing.T) {
+	fmt.Println("GETH: api_test.go TestParentBeaconBlockRoot() is called -----------------------------------------")
 	log.Root().SetHandler(log.LvlFilterHandler(log.LvlTrace, log.StreamHandler(colorable.NewColorableStderr(), log.TerminalFormat(true))))
 
 	genesis, blocks := generateMergeChain(10, true)

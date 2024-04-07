@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"encoding/hex"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -339,6 +340,7 @@ func (d *Downloader) UnregisterPeer(id string) error {
 // LegacySync tries to sync up our local block chain with a remote peer, both
 // adding various sanity checks as well as wrapping it with various log entries.
 func (d *Downloader) LegacySync(id string, head common.Hash, td, ttd *big.Int, mode SyncMode) error {
+	fmt.Println("GETH: downloader.go: LegacySync() 가 불린 상황이야")
 	err := d.synchronise(id, head, td, ttd, mode, false, nil)
 
 	switch err {
@@ -369,6 +371,7 @@ func (d *Downloader) LegacySync(id string, head common.Hash, td, ttd *big.Int, m
 // it will use the best peer possible and synchronize if its TD is higher than our own. If any of the
 // checks fail an error will be returned. This method is synchronous
 func (d *Downloader) synchronise(id string, hash common.Hash, td, ttd *big.Int, mode SyncMode, beaconMode bool, beaconPing chan struct{}) error {
+	fmt.Println("GETH: downloader.go: synchronise() 가 불린 상황이야, hash: ", hex.EncodeToString(hash[:]))
 	// The beacon header syncer is async. It will start this synchronization and
 	// will continue doing other tasks. However, if synchronization needs to be
 	// cancelled, the syncer needs to know if we reached the startup point (and
@@ -454,6 +457,7 @@ func (d *Downloader) getMode() SyncMode {
 // syncWithPeer starts a block synchronization based on the hash chain from the
 // specified peer and head hash.
 func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td, ttd *big.Int, beaconMode bool) (err error) {
+	fmt.Println("GETH: downloader.go: syncWithPeer() 가 불린 상황이야, hash: ", hex.EncodeToString(hash[:]))
 	d.mux.Post(StartEvent{})
 	defer func() {
 		// reset on error
@@ -486,11 +490,13 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td, ttd *
 	} else {
 		// In beacon mode, use the skeleton chain to retrieve the headers from
 		latest, _, final, err = d.skeleton.Bounds()
+		fmt.Println("GETH: downloader.go: syncWithPeer() latest: ", latest, " final: ", final)
 		if err != nil {
 			return err
 		}
 		if latest.Number.Uint64() > uint64(fsMinFullBlocks) {
 			number := latest.Number.Uint64() - uint64(fsMinFullBlocks)
+			fmt.Println("GETH: downloader.go: syncWithPeer() number: ", number)
 
 			// Retrieve the pivot header from the skeleton chain segment but
 			// fallback to local chain if it's not found in skeleton space.
@@ -505,6 +511,7 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td, ttd *
 					}
 				}
 			}
+			fmt.Println("GETH: downloader.go: syncWithPeer() pivot 최초설정 후: ", pivot)
 			// Print an error log and return directly in case the pivot header
 			// is still not found. It means the skeleton chain is not linked
 			// correctly with local chain.
@@ -520,6 +527,7 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td, ttd *
 	// nil panics on access.
 	if mode == SnapSync && pivot == nil {
 		pivot = d.blockchain.CurrentBlock()
+		fmt.Println("GETH: downloader.go: syncWithPeer() pivot: ", pivot)
 	}
 	height := latest.Number.Uint64()
 
@@ -532,7 +540,9 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td, ttd *
 		}
 	} else {
 		// In beacon mode, use the skeleton chain for the ancestor lookup
+		fmt.Println("GETH: downloader.go: syncWithPeer() findBeaconAncestor()를 부르기 직전")
 		origin, err = d.findBeaconAncestor()
+		fmt.Println("GETH: downloader.go: syncWithPeer() findBeaconAncestor()를 부른 직후 origin: ", origin)
 		if err != nil {
 			return err
 		}
@@ -546,10 +556,12 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td, ttd *
 
 	// Ensure our origin point is below any snap sync pivot point
 	if mode == SnapSync {
+		fmt.Println("GETH: downloader.go: syncWithPeer() mode == SnapSync 인 상황이야")
 		if height <= uint64(fsMinFullBlocks) {
 			origin = 0
 		} else {
 			pivotNumber := pivot.Number.Uint64()
+			fmt.Println("GETH: downloader.go: syncWithPeer() pivotNumber: ", pivotNumber)
 			if pivotNumber <= origin {
 				origin = pivotNumber - 1
 			}
@@ -634,11 +646,15 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td, ttd *
 		func() error { return d.processHeaders(origin+1, td, ttd, beaconMode) },
 	}
 	if mode == SnapSync {
+		fmt.Println("GETH: downloader.go: syncWithPeer() 말미에 나오는 mode == SnapSync 조건문 내부로 들어온 상황이야 ")
 		d.pivotLock.Lock()
 		d.pivotHeader = pivot
 		d.pivotLock.Unlock()
 
-		fetchers = append(fetchers, func() error { return d.processSnapSyncContent() })
+		fetchers = append(fetchers, func() error { 
+			fmt.Println("GETH: downloader.go: syncWithPeer() processSnapSyncContent() 를 부르기 직전이야")
+			return d.processSnapSyncContent() 
+		})
 	} else if mode == FullSync {
 		fetchers = append(fetchers, func() error { return d.processFullSyncContent(ttd, beaconMode) })
 	}
@@ -1534,6 +1550,7 @@ func (d *Downloader) processFullSyncContent(ttd *big.Int, beaconMode bool) error
 }
 
 func (d *Downloader) importBlockResults(results []*fetchResult) error {
+	fmt.Println("GETH: downloader.go importBlockResults()가 불린 상황이야")
 	// Check for any early termination requests
 	if len(results) == 0 {
 		return nil
@@ -1584,9 +1601,11 @@ func (d *Downloader) importBlockResults(results []*fetchResult) error {
 // processSnapSyncContent takes fetch results from the queue and writes them to the
 // database. It also controls the synchronisation of state nodes of the pivot block.
 func (d *Downloader) processSnapSyncContent() error {
+	fmt.Println("GETH: downloader.go processSnapSyncContent()가 불린 상황이야")
 	// Start syncing state of the reported head block. This should get us most of
 	// the state of the pivot block.
 	d.pivotLock.RLock()
+	fmt.Println("GETH: downloader.go 에서 lock을 잡고 syncState()를 부르기 직전이야")
 	sync := d.syncState(d.pivotHeader.Root)
 	d.pivotLock.RUnlock()
 
@@ -1611,6 +1630,7 @@ func (d *Downloader) processSnapSyncContent() error {
 		oldTail  []*fetchResult // Downloaded content after the pivot
 	)
 	for {
+		fmt.Println("GETH: downloader.go 에서 processSnapSyncContent()의 for loop +++++++++++++++++++++++")
 		// Wait for the next batch of downloaded data to be available, and if the pivot
 		// block became stale, move the goalpost
 		results := d.queue.Results(oldPivot == nil) // Block if we're not monitoring pivot staleness
@@ -1642,6 +1662,7 @@ func (d *Downloader) processSnapSyncContent() error {
 		if oldPivot == nil {
 			if pivot.Root != sync.root {
 				sync.Cancel()
+				fmt.Println("GETH: downloader.go if oldPivot == nil 조건문 안에서 syncState()를 부르기 직전이야")
 				sync = d.syncState(pivot.Root)
 
 				go closeOnErr(sync)
@@ -1672,6 +1693,7 @@ func (d *Downloader) processSnapSyncContent() error {
 				rawdb.WriteLastPivotNumber(d.stateDB, pivot.Number.Uint64())
 			}
 		}
+		fmt.Println("GETH: downloader.go 에서 processSnapSyncContent()의 for loop에서 splitAroundPivot()를 부르기 직전이야")
 		P, beforeP, afterP := splitAroundPivot(pivot.Number.Uint64(), results)
 		if err := d.commitSnapSyncData(beforeP, sync); err != nil {
 			return err
@@ -1680,6 +1702,7 @@ func (d *Downloader) processSnapSyncContent() error {
 			// If new pivot block found, cancel old state retrieval and restart
 			if oldPivot != P {
 				sync.Cancel()
+				fmt.Println("GETH: downloader.go if P != nil 조건문 안에서 syncState()를 부르기 직전이야")
 				sync = d.syncState(P.Header.Root)
 
 				go closeOnErr(sync)
@@ -1688,6 +1711,7 @@ func (d *Downloader) processSnapSyncContent() error {
 			// Wait for completion, occasionally checking for pivot staleness
 			select {
 			case <-sync.done:
+				fmt.Println("GETH: downloader.go sync.done case 문으로 들어왔어")
 				if sync.err != nil {
 					return sync.err
 				}
@@ -1702,6 +1726,7 @@ func (d *Downloader) processSnapSyncContent() error {
 			}
 		}
 		// Fast sync done, pivot commit done, full import
+		fmt.Println("GETH: downloader.go importBlockResults()를 부르기 직전이야")
 		if err := d.importBlockResults(afterP); err != nil {
 			return err
 		}
@@ -1709,6 +1734,7 @@ func (d *Downloader) processSnapSyncContent() error {
 }
 
 func splitAroundPivot(pivot uint64, results []*fetchResult) (p *fetchResult, before, after []*fetchResult) {
+	fmt.Println("GETH: downloader.go splitAroundPivot()가 불린 상황이야")
 	if len(results) == 0 {
 		return nil, nil, nil
 	}
@@ -1732,6 +1758,7 @@ func splitAroundPivot(pivot uint64, results []*fetchResult) (p *fetchResult, bef
 }
 
 func (d *Downloader) commitSnapSyncData(results []*fetchResult, stateSync *stateSync) error {
+	fmt.Println("GETH: downloader.go commitSnapSyncData()가 불린 상황이야")
 	// Check for any early termination requests
 	if len(results) == 0 {
 		return nil
@@ -1765,6 +1792,7 @@ func (d *Downloader) commitSnapSyncData(results []*fetchResult, stateSync *state
 }
 
 func (d *Downloader) commitPivotBlock(result *fetchResult) error {
+	fmt.Println("GETH: downloader.go commitPivotBlock()가 불린 상황이야")
 	block := types.NewBlockWithHeader(result.Header).WithBody(result.Transactions, result.Uncles).WithWithdrawals(result.Withdrawals)
 	log.Debug("Committing snap sync pivot as new head", "number", block.Number(), "hash", block.Hash())
 

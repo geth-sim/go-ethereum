@@ -52,6 +52,7 @@ func newBeaconBackfiller(dl *Downloader, success func()) backfiller {
 // suspend cancels any background downloader threads and returns the last header
 // that has been successfully backfilled.
 func (b *beaconBackfiller) suspend() *types.Header {
+	fmt.Println("GETH: downloader/beaconsync.go: suspend()가 불린 상황")
 	// If no filling is running, don't waste cycles
 	b.lock.Lock()
 	filling := b.filling
@@ -80,6 +81,7 @@ func (b *beaconBackfiller) suspend() *types.Header {
 
 // resume starts the downloader threads for backfilling state and chain data.
 func (b *beaconBackfiller) resume() {
+	fmt.Println("GETH: downloader/beaconsync.go: resume()가 불린 상황")
 	b.lock.Lock()
 	if b.filling {
 		// If a previous filling cycle is still running, just ignore this start
@@ -105,6 +107,7 @@ func (b *beaconBackfiller) resume() {
 		}()
 		// If the downloader fails, report an error as in beacon chain mode there
 		// should be no errors as long as the chain we're syncing to is valid.
+		fmt.Println("GETH: downloader/beaconsync.go: resume() 내부에서 sycnrhonise()가 불리기 직전")
 		if err := b.downloader.synchronise("", common.Hash{}, nil, nil, mode, true, b.started); err != nil {
 			log.Error("Beacon backfilling failed", "err", err)
 			return
@@ -120,11 +123,14 @@ func (b *beaconBackfiller) resume() {
 // setMode updates the sync mode from the current one to the requested one. If
 // there's an active sync in progress, it will be cancelled and restarted.
 func (b *beaconBackfiller) setMode(mode SyncMode) {
+	fmt.Println("GETH: downloader/beaconsync.go: setMode()가 불린 상황")
 	// Update the old sync mode and track if it was changed
 	b.lock.Lock()
+	fmt.Println("GETH: downloader/beaconsync.go: setMode()에서 락을 잡은 상황")
 	updated := b.syncMode != mode
 	filling := b.filling
 	b.syncMode = mode
+	fmt.Println("GETH: downloader/beaconsync.go: setMode()에서 락을 풀기 직전")
 	b.lock.Unlock()
 
 	// If the sync mode was changed mid-sync, restart. This should never ever
@@ -133,8 +139,11 @@ func (b *beaconBackfiller) setMode(mode SyncMode) {
 		return
 	}
 	log.Error("Downloader sync mode changed mid-run", "old", mode.String(), "new", mode.String())
+	fmt.Println("GETH: downloader/beaconsync.go: setMode()에서 suspend()가 불리기 직전")
 	b.suspend()
+	fmt.Println("GETH: downloader/beaconsync.go: setMode()에서 suspend()를 부른 후 resume()이 불리기 직전")
 	b.resume()
+	fmt.Println("GETH: downloader/beaconsync.go: setMode()에서 resume()까지 불리고 난 후")
 }
 
 // SetBadBlockCallback sets the callback to run when a bad block is hit by the
@@ -171,6 +180,7 @@ func (d *Downloader) BeaconExtend(mode SyncMode, head *types.Header) error {
 // Internally backfilling and state sync is done the same way, but the header
 // retrieval and scheduling is replaced.
 func (d *Downloader) beaconSync(mode SyncMode, head *types.Header, final *types.Header, force bool) error {
+	fmt.Println("GETH: downloader/beaconsync.go: beaconSync()가 불린 상황 ================")
 	// When the downloader starts a sync cycle, it needs to be aware of the sync
 	// mode to use (full, snap). To keep the skeleton chain oblivious, inject the
 	// mode into the backfiller directly.
@@ -183,6 +193,8 @@ func (d *Downloader) beaconSync(mode SyncMode, head *types.Header, final *types.
 	if err := d.skeleton.Sync(head, final, force); err != nil {
 		return err
 	}
+
+	fmt.Println("GETH: downloader/beaconsync.go: beaconSync() 마무리 ================")
 	return nil
 }
 

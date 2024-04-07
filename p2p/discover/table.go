@@ -339,9 +339,12 @@ func (tab *Table) loadSeedNodes() {
 // doRevalidate checks that the last node in a random bucket is still live and replaces or
 // deletes the node if it isn't.
 func (tab *Table) doRevalidate(done chan<- struct{}) {
+	fmt.Println("doRevalidate ####################################")
 	defer func() { done <- struct{}{} }()
 
 	last, bi := tab.nodeToRevalidate()
+	fmt.Println("last", last, "bi", bi, "####################################")
+
 	if last == nil {
 		// No non-empty bucket found.
 		return
@@ -381,6 +384,7 @@ func (tab *Table) doRevalidate(done chan<- struct{}) {
 
 // nodeToRevalidate returns the last node in a random, non-empty bucket.
 func (tab *Table) nodeToRevalidate() (n *node, bi int) {
+	fmt.Println("nodeToRevalidate() ####################################")
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
 

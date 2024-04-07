@@ -239,6 +239,7 @@ func newSkeleton(db ethdb.Database, peers *peerSet, drop peerDropFn, filler back
 // per process but at the same time not start before the beacon chain announces
 // a new (existing) head.
 func (s *skeleton) startup() {
+	fmt.Println("GETH: downloader/skeleton.go: startup()가 불린 상황")
 	// Close a notification channel so anyone sending us events will know if the
 	// sync loop was torn down for good.
 	defer close(s.terminated)
@@ -247,6 +248,7 @@ func (s *skeleton) startup() {
 	// client requests sync head extensions, but not forced reorgs (i.e. they are
 	// giving us new payloads without setting a starting head initially).
 	for {
+		fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 outer for loop")
 		select {
 		case errc := <-s.terminate:
 			// No head was announced but Geth is shutting down
@@ -256,7 +258,9 @@ func (s *skeleton) startup() {
 		case event := <-s.headEvents:
 			// New head announced, start syncing to it, looping every time a current
 			// cycle is terminated due to a chain event (head reorg, old chain merge).
+			fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 case event := <-s.headEvents 로 들어온 상황")
 			if !event.force {
+				fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 case event := <-s.headEvents 로 들어온 상황, !event.force")
 				event.errc <- errors.New("forced head needed for startup")
 				continue
 			}
@@ -265,35 +269,43 @@ func (s *skeleton) startup() {
 			s.started = time.Now()
 
 			for {
+				fmt.Println("GETH: downloader/skeleton.go: startup() case event := <-s.headEvents 내부의 for loop")
 				// If the sync cycle terminated or was terminated, propagate up when
 				// higher layers request termination. There's no fancy explicit error
 				// signalling as the sync loop should never terminate (TM).
+				fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 sync() 부르기 직전")
 				newhead, err := s.sync(head)
+				fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 sync() 부른 직후")
 				switch {
 				case err == errSyncLinked:
+					fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 sync() 부른 직후, errSyncLinked")
 					// Sync cycle linked up to the genesis block. Tear down the loop
 					// and restart it so, it can properly notify the backfiller. Don't
 					// account a new head.
 					head = nil
 
 				case err == errSyncMerged:
+					fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 sync() 부른 직후, errSyncMerged")
 					// Subchains were merged, we just need to reinit the internal
 					// start to continue on the tail of the merged chain. Don't
 					// announce a new head,
 					head = nil
 
 				case err == errSyncReorged:
+					fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 sync() 부른 직후, errSyncReorged")
 					// The subchain being synced got modified at the head in a
 					// way that requires resyncing it. Restart sync with the new
 					// head to force a cleanup.
 					head = newhead
 
 				case err == errTerminated:
+					fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 sync() 부른 직후, errTerminated")
 					// Sync was requested to be terminated from within, stop and
 					// return (no need to pass a message, was already done internally)
 					return
 
 				default:
+					fmt.Println("GETH: downloader/skeleton.go: startup()내부에서 sync() 부른 직후, default")
 					// Sync either successfully terminated or failed with an unhandled
 					// error. Abort and wait until Geth requests a termination.
 					errc := <-s.terminate
@@ -324,6 +336,7 @@ func (s *skeleton) Terminate() error {
 // This method does not block, rather it just waits until the syncer receives the
 // fed header. What the syncer does with it is the syncer's problem.
 func (s *skeleton) Sync(head *types.Header, final *types.Header, force bool) error {
+	fmt.Println("GETH: downloader/skeleton.go: Sync()가 불린 상황, head.Number:", head.Number, "head.Hash: ", head.Hash())
 	log.Trace("New skeleton head announced", "number", head.Number, "hash", head.Hash(), "force", force)
 	errc := make(chan error)
 
@@ -339,18 +352,23 @@ func (s *skeleton) Sync(head *types.Header, final *types.Header, force bool) err
 // until some termination condition is reached, or until the current cycle merges
 // with a previously aborted run.
 func (s *skeleton) sync(head *types.Header) (*types.Header, error) {
+	fmt.Println("GETH: downloader/skeleton.go: sync()가 불린 상황")
 	// If we're continuing a previous merge interrupt, just access the existing
 	// old state without initing from disk.
 	if head == nil {
+		fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 ReadSkeletonHeader()를 부르기 직전")
 		head = rawdb.ReadSkeletonHeader(s.db, s.progress.Subchains[0].Head)
 	} else {
 		// Otherwise, initialize the sync, trimming and previous leftovers until
 		// we're consistent with the newly requested chain head
+		fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 initSync()를 부르기 직전")
 		s.initSync(head)
 	}
 	// Create the scratch space to fill with concurrently downloaded headers
 	s.scratchSpace = make([]*types.Header, scratchHeaders)
-	defer func() { s.scratchSpace = nil }() // don't hold on to references after sync
+	defer func() { s.scratchSpace = nil 
+		fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 실행되어야 할 마지막 defer()문임")
+		}() // don't hold on to references after sync
 
 	s.scratchOwners = make([]string, scratchHeaders/requestHeaders)
 	defer func() { s.scratchOwners = nil }() // don't hold on to references after sync
@@ -364,9 +382,11 @@ func (s *skeleton) sync(head *types.Header) (*types.Header, error) {
 		rawdb.HasBody(s.db, s.progress.Subchains[0].Next, s.scratchHead) &&
 		rawdb.HasReceipts(s.db, s.progress.Subchains[0].Next, s.scratchHead)
 	if linked {
+		fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 linked 성공해서 resume()가 불린상황")
 		s.filler.resume()
 	}
 	defer func() {
+		fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 suspend()를 포함하는 defer()문")
 		// The filler needs to be suspended, but since it can block for a while
 		// when there are many blocks queued up for full-sync importing, run it
 		// on a separate goroutine and consume head messages that need instant
@@ -374,6 +394,7 @@ func (s *skeleton) sync(head *types.Header) (*types.Header, error) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
+			fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 suspend()가 불리기 직전")
 			if filled := s.filler.suspend(); filled != nil {
 				// If something was filled, try to delete stale sync helpers. If
 				// unsuccessful, warn the user, but not much else we can do (it's
@@ -428,13 +449,16 @@ func (s *skeleton) sync(head *types.Header) (*types.Header, error) {
 		s.syncStarting()
 	}
 	for {
+		fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 for loop 시작 &&&&&&&&&&&&&&&&&&&&&")
 		// Something happened, try to assign new tasks to any idle peers
 		if !linked {
+			fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 assignTasks()가 불리기 직전")
 			s.assignTasks(responses, requestFails, cancel)
 		}
 		// Wait for something to happen
 		select {
 		case event := <-peering:
+			fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 case event := <-peering 로 들어온 상황")
 			// A peer joined or left, the tasks queue and allocations need to be
 			// checked for potential assignment or reassignment
 			peerid := event.peer.id
@@ -448,10 +472,12 @@ func (s *skeleton) sync(head *types.Header) (*types.Header, error) {
 			}
 
 		case errc := <-s.terminate:
+			fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 case errc := <-s.terminate 로 들어온 상황")
 			errc <- nil
 			return nil, errTerminated
 
 		case event := <-s.headEvents:
+			fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 case event := <-s.headEvents 로 들어온 상황")
 			// New head was announced, try to integrate it. If successful, nothing
 			// needs to be done as the head simply extended the last range. For now
 			// we don't seamlessly integrate reorgs to keep things simple. If the
@@ -474,13 +500,16 @@ func (s *skeleton) sync(head *types.Header) (*types.Header, error) {
 			// is still running, it will pick it up. If it already terminated,
 			// a new cycle needs to be spun up.
 			if linked {
+				fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 case event := <-s.headEvents 로 들어와서 그 안에서 resume()을 부르기 직전")
 				s.filler.resume()
 			}
 
 		case req := <-requestFails:
+			fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 case req := <-requestFails 로 들어온 상황")
 			s.revertRequest(req)
 
 		case res := <-responses:
+			fmt.Println("GETH: downloader/skeleton.go: sync()내부에서 case res:= <-responses 로 들어온 상황")
 			// Process the batch of headers. If though processing we managed to
 			// link the current subchain to a previously downloaded one, abort the
 			// sync and restart with the merged subchains.
@@ -505,6 +534,7 @@ func (s *skeleton) sync(head *types.Header) (*types.Header, error) {
 // past state on disk and the newly requested head to sync to. If the new head
 // is nil, the method will return and continue from the previous head.
 func (s *skeleton) initSync(head *types.Header) {
+	fmt.Println("GETH: downloader/skeleton.go: initSync()가 불린 상황")
 	// Extract the head number, we'll need it all over
 	number := head.Number.Uint64()
 
@@ -671,6 +701,7 @@ func (s *skeleton) processNewHead(head *types.Header, final *types.Header, force
 
 // assignTasks attempts to match idle peers to pending header retrievals.
 func (s *skeleton) assignTasks(success chan *headerResponse, fail chan *headerRequest, cancel chan struct{}) {
+	fmt.Println("GETH: downloader/skeleton.go: assignTasks()가 불린 상황 ***********************************************")
 	// Sort the peers by download capacity to use faster ones if many available
 	idlers := &peerCapacitySort{
 		peers: make([]*peerConnection, 0, len(s.idles)),

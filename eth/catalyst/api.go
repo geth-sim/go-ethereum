@@ -18,6 +18,7 @@
 package catalyst
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -172,6 +173,7 @@ func newConsensusAPIWithoutHeartbeat(eth *eth.Ethereum) *ConsensusAPI {
 // If there are payloadAttributes: we try to assemble a block with the payloadAttributes
 // and return its payloadID.
 func (api *ConsensusAPI) ForkchoiceUpdatedV1(update engine.ForkchoiceStateV1, payloadAttributes *engine.PayloadAttributes) (engine.ForkChoiceResponse, error) {
+	fmt.Println("ForkChoiceUpdatedV1() called -------------------------------------------")
 	if payloadAttributes != nil {
 		if payloadAttributes.Withdrawals != nil {
 			return engine.STATUS_INVALID, engine.InvalidParams.With(errors.New("withdrawals not supported in V1"))
@@ -183,9 +185,26 @@ func (api *ConsensusAPI) ForkchoiceUpdatedV1(update engine.ForkchoiceStateV1, pa
 	return api.forkchoiceUpdated(update, payloadAttributes)
 }
 
+// // ForkchoiceUpdatedV2 is equivalent to V1 with the addition of withdrawals in the payload attributes.
+// func (api *ConsensusAPI) ForkchoiceUpdatedV2(update engine.ForkchoiceStateV1, payloadAttributes *engine.PayloadAttributes) (engine.ForkChoiceResponse, error) {
+// 	if payloadAttributes != nil {
+// 		if err := api.verifyPayloadAttributes(payloadAttributes); err != nil {
+// 			return engine.STATUS_INVALID, engine.InvalidParams.With(err)
+// 		}
+// 	}
+// 	return api.forkchoiceUpdated(update, payloadAttributes)
+// }
+
 // ForkchoiceUpdatedV2 is equivalent to V1 with the addition of withdrawals in the payload attributes.
 func (api *ConsensusAPI) ForkchoiceUpdatedV2(update engine.ForkchoiceStateV1, payloadAttributes *engine.PayloadAttributes) (engine.ForkChoiceResponse, error) {
-	if payloadAttributes != nil {
+	if payloadAttributes == nil {
+		fmt.Println("ForkchoiceUpdatedV2() called ------------------------------------------- payloadAttributes is nil")
+	} else {
+		if payloadAttributes.BeaconRoot != nil {
+			fmt.Println("ForkchoiceUpdatedV2() called ------------------------------------------- BeaconRoot: ", hex.EncodeToString((*payloadAttributes.BeaconRoot)[:]))
+		} else {
+			fmt.Println("ForkchoiceUpdatedV2() called ------------------------------------------- BeaconRoot is nil")
+		}
 		if err := api.verifyPayloadAttributes(payloadAttributes); err != nil {
 			return engine.STATUS_INVALID, engine.InvalidParams.With(err)
 		}
@@ -193,8 +212,10 @@ func (api *ConsensusAPI) ForkchoiceUpdatedV2(update engine.ForkchoiceStateV1, pa
 	return api.forkchoiceUpdated(update, payloadAttributes)
 }
 
+
 // ForkchoiceUpdatedV3 is equivalent to V2 with the addition of parent beacon block root in the payload attributes.
 func (api *ConsensusAPI) ForkchoiceUpdatedV3(update engine.ForkchoiceStateV1, payloadAttributes *engine.PayloadAttributes) (engine.ForkChoiceResponse, error) {
+	fmt.Println("ForkChoiceUpdatedV3() called -------------------------------------------")
 	if payloadAttributes != nil {
 		if err := api.verifyPayloadAttributes(payloadAttributes); err != nil {
 			return engine.STATUS_INVALID, engine.InvalidParams.With(err)
@@ -228,6 +249,7 @@ func checkAttribute(active func(*big.Int, uint64) bool, exists bool, time uint64
 }
 
 func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payloadAttributes *engine.PayloadAttributes) (engine.ForkChoiceResponse, error) {
+	fmt.Println("forkchoiceUpdated() called -------------------------------------------")
 	api.forkchoiceLock.Lock()
 	defer api.forkchoiceLock.Unlock()
 
@@ -279,6 +301,7 @@ func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payl
 			}
 		}
 		log.Info("Forkchoice requested sync to new head", context...)
+		fmt.Println("forkchoiceUpdated() calls api.eth.Downloader().BeaconSync() -------------------------------------------")
 		if err := api.eth.Downloader().BeaconSync(api.eth.SyncMode(), header, finalized); err != nil {
 			return engine.STATUS_SYNCING, err
 		}
@@ -457,6 +480,7 @@ func (api *ConsensusAPI) NewPayloadV1(params engine.ExecutableData) (engine.Payl
 
 // NewPayloadV2 creates an Eth1 block, inserts it in the chain, and returns the status of the chain.
 func (api *ConsensusAPI) NewPayloadV2(params engine.ExecutableData) (engine.PayloadStatusV1, error) {
+	fmt.Println("NewPayloadV2() called ------------------------------------------- BlockHash: ", hex.EncodeToString(params.BlockHash[:]),"StateRoot: ", hex.EncodeToString(params.StateRoot[:]))
 	if api.eth.BlockChain().Config().IsShanghai(new(big.Int).SetUint64(params.Number), params.Timestamp) {
 		if params.Withdrawals == nil {
 			return engine.PayloadStatusV1{Status: engine.INVALID}, engine.InvalidParams.With(errors.New("nil withdrawals post-shanghai"))
@@ -493,6 +517,11 @@ func (api *ConsensusAPI) NewPayloadV3(params engine.ExecutableData, versionedHas
 }
 
 func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashes []common.Hash, beaconRoot *common.Hash) (engine.PayloadStatusV1, error) {
+	if beaconRoot != nil {
+		fmt.Println("newPayload() called ------------------------------------------- beaconRoot: ", hex.EncodeToString((*beaconRoot)[:]))
+	} else {
+		fmt.Println("newPayload() called ------------------------------------------- beaconRoot is nil")
+	}
 	// The locking here is, strictly, not required. Without these locks, this can happen:
 	//
 	// 1. NewPayload( execdata-N ) is invoked from the CL. It goes all the way down to
@@ -539,6 +568,7 @@ func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashe
 	// update after legit payload executions.
 	parent := api.eth.BlockChain().GetBlock(block.ParentHash(), block.NumberU64()-1)
 	if parent == nil {
+		fmt.Println("parent == nil called delayPayloadImport() -------------------------------------------")
 		return api.delayPayloadImport(block)
 	}
 	// We have an existing parent, do some sanity checks to avoid the beacon client
@@ -565,6 +595,7 @@ func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashe
 	// into the database directly will conflict with the assumptions of snap sync
 	// that it has an empty db that it can fill itself.
 	if api.eth.SyncMode() != downloader.FullSync {
+		fmt.Println("api.eth.SyncMode() != downloader.FullSync called delayPayloadImport() -------------------------------------------")
 		return api.delayPayloadImport(block)
 	}
 	if !api.eth.BlockChain().HasBlockAndState(block.ParentHash(), block.NumberU64()-1) {
@@ -599,6 +630,7 @@ func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashe
 // be called by the newpayload command when the block seems to be ok, but some
 // prerequisite prevents it from being processed (e.g. no parent, or snap sync).
 func (api *ConsensusAPI) delayPayloadImport(block *types.Block) (engine.PayloadStatusV1, error) {
+	fmt.Println("delayPayloadImport() called ------------------------------------------- block.Hash: ",  block.Hash())
 	// Sanity check that this block's parent is not on a previously invalidated
 	// chain. If it is, mark the block as invalid too.
 	if res := api.checkInvalidAncestor(block.ParentHash(), block.Hash()); res != nil {
@@ -611,6 +643,7 @@ func (api *ConsensusAPI) delayPayloadImport(block *types.Block) (engine.PayloadS
 	// Although we don't want to trigger a sync, if there is one already in
 	// progress, try to extend if with the current payload request to relieve
 	// some strain from the forkchoice update.
+	fmt.Println("delayPayloadImport() calls api.eth.Downloader().BeaconExtend() -------------------------------------------")
 	if err := api.eth.Downloader().BeaconExtend(api.eth.SyncMode(), block.Header()); err == nil {
 		log.Debug("Payload accepted for sync extension", "number", block.NumberU64(), "hash", block.Hash())
 		return engine.PayloadStatusV1{Status: engine.SYNCING}, nil

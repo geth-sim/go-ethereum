@@ -20,6 +20,7 @@ import (
 	"errors"
 	"sync"
 	"time"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/beacon/engine"
 	"github.com/ethereum/go-ethereum/common"
@@ -81,6 +82,7 @@ type SimulatedBeacon struct {
 }
 
 func NewSimulatedBeacon(period uint64, eth *eth.Ethereum) (*SimulatedBeacon, error) {
+	fmt.Println("GETH: simulated_beacon.go NewSimulatedBeacon() is called ---------------------------------")
 	chainConfig := eth.APIBackend.ChainConfig()
 	if !chainConfig.IsDevMode {
 		return nil, errors.New("incompatible pre-existing chain configuration")
@@ -135,6 +137,7 @@ func (c *SimulatedBeacon) Stop() error {
 // sealBlock initiates payload building for a new block and creates a new block
 // with the completed payload.
 func (c *SimulatedBeacon) sealBlock(withdrawals []*types.Withdrawal) error {
+	fmt.Println("GETH: simulated_beacon.go sealBlock() is called ---------------------------------")
 	tstamp := uint64(time.Now().Unix())
 	if tstamp <= c.lastBlockTime {
 		tstamp = c.lastBlockTime + 1

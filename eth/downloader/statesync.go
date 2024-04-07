@@ -18,6 +18,7 @@ package downloader
 
 import (
 	"sync"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -25,6 +26,7 @@ import (
 
 // syncState starts downloading state with the given root hash.
 func (d *Downloader) syncState(root common.Hash) *stateSync {
+	fmt.Println("GETH: statesync.go syncState()가 불린 상황이야")
 	// Create the state sync
 	s := newStateSync(d, root)
 	select {
