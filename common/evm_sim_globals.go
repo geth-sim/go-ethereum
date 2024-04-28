@@ -69,6 +69,9 @@ var (
 	NextKey  = uint64(1)
 	ZeroHash = Hash{}
 	MaxHash  = HexToHash("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+
+	// INF epoch length for "deleteEpoch" & "inactivateEpoch" & "sweepEpoch"
+	InfiniteEpoch = uint64(100000000)
 )
 
 // return simulation mode and its options

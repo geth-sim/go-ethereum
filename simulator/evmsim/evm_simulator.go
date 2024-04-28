@@ -158,6 +158,27 @@ func connHandler(conn net.Conn) {
 				fromLevel, _ := strconv.ParseUint(params[4], 10, 64)
 				restoreProofFromLevel = uint(fromLevel)
 
+				if inactivateEpoch % deleteEpoch != 0 {
+					if deleteEpoch != common.InfiniteEpoch && inactivateEpoch != common.InfiniteEpoch {
+						fmt.Println("ERROR: inactivate epoch should be multiple of delete epoch")
+						fmt.Println("  delete epoch:", deleteEpoch)
+						fmt.Println("  inactivate epoch:", inactivateEpoch)
+						os.Exit(1)
+					}
+					if deleteEpoch == common.InfiniteEpoch && inactivateEpoch != common.InfiniteEpoch {
+						fmt.Println("ERROR: inactivate epoch should be INF when delete epoch is INF")
+						fmt.Println("  delete epoch:", deleteEpoch)
+						fmt.Println("  inactivate epoch:", inactivateEpoch)
+						os.Exit(1)
+					}
+					// if deleteEpoch != common.InfiniteEpoch && inactivateEpoch == common.InfiniteEpoch {
+					// 	// ok
+					// }
+					// if deleteEpoch == common.InfiniteEpoch && inactivateEpoch == common.InfiniteEpoch {
+					// 	// ok
+					// }
+				}
+
 				response = []byte("success")
 
 			case "insertHeader":
@@ -464,7 +485,7 @@ func connHandler(conn net.Conn) {
 				//
 				if len(restoreAddrs) != 0 || len(accessAddrs) != 0 {
 					start := time.Now()
-					if common.SimulationMode == common.EthaneMode {
+					if common.SimulationMode == common.EthaneMode && inactivateEpoch != common.InfiniteEpoch {
 						restoreEthaneAddrsV2(simBlock)
 					} else if common.SimulationMode == common.EthanosMode {
 						restoreEthanosAddrs(simBlock)
@@ -593,6 +614,10 @@ func connHandler(conn net.Conn) {
 				//
 				if common.SimulationMode == common.EthaneMode {
 					// fmt.Println("blockNum:", currentBlockNum, "/ deleteEpoch:", deleteEpoch)
+
+					if deleteEpoch == common.InfiniteEpoch {
+						common.KeysToDelete = make([]common.Hash, 0)
+					}
 					if (currentBlockNum+1)%deleteEpoch == 0 {
 						stateDB.IntermediateRoot(deleteEmptyObjects) // apply remained modifications before deletion
 						stateDB.DeletePreviousAccounts()
