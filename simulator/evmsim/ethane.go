@@ -339,7 +339,6 @@ func restoreEthaneAddrsV2(simBlock *common.SimBlock) {
 	//
 	simBlock.AccountRestoreNum = restoredNum
 
-	accessAddrs = make([]common.Address, 0)
 	if restoredNum == 0 {
 		// no need to commit
 		return

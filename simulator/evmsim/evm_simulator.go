@@ -58,7 +58,7 @@ var (
 	//
 	big8                   = big.NewInt(8)
 	big32                  = big.NewInt(32)
-	diskSizeMeasureEpoch   = uint64(500000)
+	diskSizeMeasureEpoch   = uint64(100000)
 	diskSizeMeasureCnt     = 0
 	diskSizeMeasureElapsed time.Duration
 )
@@ -722,8 +722,9 @@ func connHandler(conn net.Conn) {
 				// clear txArgsList
 				txArgsList = make([]*core.TransactionArgs, 0)
 
-				// clear restore address list
+				// clear restore address list & access list
 				restoreAddrs = make([]common.Address, 0)
+				accessAddrs = make([]common.Address, 0)
 
 				// delete current uncle info
 				delete(uncleInfos, currentBlockNum)
@@ -1057,8 +1058,7 @@ func connHandler(conn net.Conn) {
 
 				for i := lastBlockNum; i > 0; i -= saveInterval {
 					// open json file
-					fileName := "evm_simulation_result_Ethane_" + strconv.FormatUint(i-saveInterval, 10) + "_" + strconv.FormatUint(i, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
-					// fileName := "evm_simulation_result_Ethane_0_" + strconv.FormatUint(i, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" +strconv.FormatUint(inactivateCriterion, 10) + ".json"
+					fileName := "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(i-saveInterval, 10) + "_" + strconv.FormatUint(i, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
 					fmt.Println("file to merge:", fileName)
 
 					file, err := os.ReadFile(simBlocksPath + fileName)
@@ -1077,7 +1077,7 @@ func connHandler(conn net.Conn) {
 					}
 				}
 
-				fileName := "merged_evm_simulation_result_Ethane_0_" + strconv.FormatUint(lastBlockNum, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
+				fileName := "merged_evm_simulation_result_" + common.GetSimulationTypeName() + "_0_" + strconv.FormatUint(lastBlockNum, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
 				jsonData, err := json.MarshalIndent(mergedSimBlocks, "", "  ")
 				if err != nil {
 					fmt.Println("JSON marshaling error:", err)
@@ -1106,11 +1106,11 @@ func connHandler(conn net.Conn) {
 
 				jsonFileName := "evm_simulation_result_"
 				if common.SimulationMode == common.EthereumMode {
-					jsonFileName += "Ethereum_" + params[1] + "_" + params[2] + ".json"
+					jsonFileName += common.GetSimulationTypeName() + "_" + params[1] + "_" + params[2] + ".json"
 				} else if common.SimulationMode == common.EthaneMode {
-					jsonFileName += "Ethane_" + params[1] + "_" + params[2] + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
+					jsonFileName += common.GetSimulationTypeName() + "_" + params[1] + "_" + params[2] + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
 				} else if common.SimulationMode == common.EthanosMode {
-					jsonFileName += "Ethanos_" + params[1] + "_" + params[2] + "_" + strconv.FormatUint(sweepEpoch, 10) + ".json"
+					jsonFileName += common.GetSimulationTypeName() + "_" + params[1] + "_" + params[2] + "_" + strconv.FormatUint(sweepEpoch, 10) + ".json"
 				} else {
 					os.Exit(1)
 				}

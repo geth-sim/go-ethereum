@@ -17,7 +17,7 @@ import (
 //
 // Ethereum important hard forks' blockNum - stateRoot
 //
-// Cancun: (March 13, 2024) - ???
+// Cancun: 19,426,587 - 0xbd33ab68095087d81beb810b3f5d0b16050b3f798ae3978e440bab048dd78992
 // Shanghai: 17,034,870 - 0x7fd42f5027bc18315b3781e65f19e4c8828fd5c5fce33410f0fb4fea0b65541f
 // Paris: 15,537,394 - 0x40c07091e16263270f3579385090fea02dd5f061ba6750228fcc082ff762fda7
 // London: 12,965,000 - 0x41cf6e8e60fd087d2b00360dc29e5bfb21959bce1f4c242fd1ad7c4da968eb87

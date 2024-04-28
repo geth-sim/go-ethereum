@@ -25,7 +25,7 @@ var (
 	SimBlocks = make(map[string]*SimBlock)
 
 	// enable snapshot or not
-	EnableSnapshot = true
+	EnableSnapshot = false
 
 	// prefixing trie node's hash value with block number
 	EnableNodePrefixing = false
@@ -33,7 +33,7 @@ var (
 	PrefixLength = 0
 
 	// opcode stats (opcode execution num/time/cost)
-	LoggingOpcodeStats = true
+	LoggingOpcodeStats = false
 	OpcodeStats        = make(map[string]*OpcodeStat)
 	CurrentOpcodeStat  = NewOpcodeStat()
 
@@ -300,7 +300,7 @@ func ResetOpcodeStat(startBlockNum uint64) {
 }
 
 // save OpcodeStats as a json file
-func SaveOpcodeLogs(filePath string) {
+func SaveOpcodeLogs(filePath string, deleteEpoch, inactivateEpoch, inactivateCriterion, sweepEpoch uint64) {
 	// encoding map to json
 	var jsonData []byte
 	var err error
@@ -320,7 +320,14 @@ func SaveOpcodeLogs(filePath string) {
 	sort.Strings(mapKeys)
 	firstBlockNum := OpcodeStats[mapKeys[0]].StartBlockNum
 	lastBlockNum := OpcodeStats[mapKeys[len(mapKeys)-1]].EndBlockNum
-	fileName := "opcode_stats_" + GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + ".json"
+	var fileName string
+	if SimulationMode == EthaneMode {
+		fileName = "opcode_stats_" + GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
+	} else if SimulationMode == EthanosMode {
+		fileName = "opcode_stats_" + GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + strconv.FormatUint(sweepEpoch, 10) + ".json"
+	} else {
+		fileName = "opcode_stats_" + GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + ".json"
+	}
 	err = os.WriteFile(filePath+fileName, jsonData, 0644)
 	if err != nil {
 		fmt.Println("File write error:", err)
