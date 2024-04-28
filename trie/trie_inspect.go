@@ -1,6 +1,7 @@
 package trie
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -26,9 +27,14 @@ import (
 // Constantinople: 7,280,000 - 0x1e302241298f913b30f7a0df60272c9983d8d8726932f66582f182bd99ef42bc
 // Byzantium: 4,370,000 - 0xe7a73d3c05829730c750ca483b5a65f8321adb25d8abb9da23a4cbb6473464ee
 
+// TODO(jmlee): trie 자체는 잘 복사하는거 같은데 snapshot을 뭔가 제대로 만들어내지 못하는듯? 확인해볼것
+
 var (
 	// copied from core/rawdb/schema.go
 	snapshotGeneratorKey = []byte("SnapshotGenerator")
+
+	leveldbPathPrefix           = "/ethereum/evm_simulator_jmlee/stateTries/"
+	trieInspectResultPathPrefix = "/ethereum/evm_simulator_jmlee/stateTries/inspectResults/"
 )
 
 // open leveldb
@@ -53,7 +59,6 @@ func openLevelDB(rootHash common.Hash, dbPathSuffix string) ethdb.Database {
 
 	// reset normal trie
 	// leveldbPath = leveldbPathPrefix + ServerPort
-	leveldbPathPrefix := "/ethereum/evm_simulator_jmlee/stateTries/"
 	leveldbPath := leveldbPathPrefix + rootHash.Hex() + dbPathSuffix
 	fmt.Println("set leveldb at:", leveldbPath)
 
@@ -93,10 +98,10 @@ type journalGenerator struct {
 type generatorStats struct {
 	// origin   uint64             // Origin prefix where generation started
 	// start    time.Time          // Timestamp when generation started
-	accounts uint64 // Number of accounts indexed(generated or recovered)
-	slots    uint64 // Number of storage slots indexed(generated or recovered)
+	Accounts uint64 // Number of accounts indexed(generated or recovered)
+	Slots    uint64 // Number of storage slots indexed(generated or recovered)
 	// dangling uint64             // Number of dangling storage slots
-	storage common.StorageSize // Total account and storage slot size(generation or recovery)
+	Storage common.StorageSize // Total account and storage slot size(generation or recovery)
 }
 
 type TrieStat struct {
@@ -122,7 +127,10 @@ type TrieStat struct {
 	StorageTriesCodeSizes []int64
 
 	// metadata for snapshot
-	snapshotStats generatorStats
+	SnapshotStats generatorStats
+
+	// trie inspect execution time (nanoseconds)
+	ElapsedTime int64
 }
 
 func NewTrieStat(rootHash common.Hash) *TrieStat {
@@ -133,6 +141,7 @@ func NewTrieStat(rootHash common.Hash) *TrieStat {
 	ts.DepthInfos = make(map[string]int64)
 	ts.StorageTrieSizes = make([]int64, 0)
 	ts.StorageTrieNodeNums = make([]int64, 0)
+	ts.StorageTriesCodeSizes = make([]int64, 0)
 	return ts
 }
 
@@ -216,12 +225,14 @@ func (ts *TrieStat) Print() {
 	}
 
 	fmt.Println("\nSnapshot infos")
-	fmt.Println("  accounts:", ts.snapshotStats.accounts)
-	fmt.Println("  slots:", ts.snapshotStats.slots)
-	fmt.Println("  storage:", ts.snapshotStats.storage)
+	fmt.Println("  accounts:", ts.SnapshotStats.Accounts)
+	fmt.Println("  slots:", ts.SnapshotStats.Slots)
+	fmt.Println("  storage:", ts.SnapshotStats.Storage)
 
 	fmt.Println("\nTotal size of state trie + storage tries + contract codes in database")
 	fmt.Println("  =>", float64(stateTrieSizeInDb)/1000000, "+", float64(storageTriesSizeInDb)/1000000, "+", float64(codesSizeInDb)/1000000, "=", float64(stateTrieSizeInDb+storageTriesSizeInDb)/1000000, "MB")
+
+	fmt.Println("\nElapsed time:", ts.ElapsedTime, "ns")
 	fmt.Println("******************************\n")
 }
 
@@ -260,9 +271,9 @@ func InspectAndCopyState(rootHash common.Hash, originDB ethdb.Database, copyStat
 				Done:   true,
 				Marker: nil,
 			}
-			// entry.Accounts = stateTrieStat.snapshotStats.accounts
-			// entry.Slots = stateTrieStat.snapshotStats.slots
-			// entry.Storage = uint64(stateTrieStat.snapshotStats.storage)
+			// entry.Accounts = stateTrieStat.SnapshotStats.accounts
+			// entry.Slots = stateTrieStat.SnapshotStats.slots
+			// entry.Storage = uint64(stateTrieStat.SnapshotStats.storage)
 			fmt.Println("print entry infos")
 			fmt.Println("  Done:", entry.Done)
 			fmt.Println("  Marker:", entry.Marker)
@@ -327,9 +338,9 @@ func InspectAndCopyState(rootHash common.Hash, originDB ethdb.Database, copyStat
 				Done:   true,
 				Marker: nil,
 			}
-			// entry.Accounts = stateTrieStat.snapshotStats.accounts
-			// entry.Slots = stateTrieStat.snapshotStats.slots
-			// entry.Storage = uint64(stateTrieStat.snapshotStats.storage)
+			// entry.Accounts = stateTrieStat.SnapshotStats.accounts
+			// entry.Slots = stateTrieStat.SnapshotStats.slots
+			// entry.Storage = uint64(stateTrieStat.SnapshotStats.storage)
 			blob, err := rlp.EncodeToBytes(entry)
 			if err != nil {
 				fmt.Println("ERROR: encoding entry error ->", err)
@@ -366,12 +377,30 @@ func InspectAndCopyState(rootHash common.Hash, originDB ethdb.Database, copyStat
 	// root node's depth is 1
 	inspectAndCopyState(stateTrieStat, rootHash, 1, startTime, originDB, copyDBs, nil)
 
+	stateTrieStat.ElapsedTime = time.Since(startTime).Nanoseconds()
+
 	// print trie stats
 	stateTrieStat.Print()
 
 	//
-	// TODO(jmlee): save stateTrieStat as json
+	// save stateTrieStat as json
 	//
+	inspectResults := make(map[string]*TrieStat)
+	inspectResults[rootHash.Hex()] = stateTrieStat
+	var jsonData []byte
+	var err error
+	// save all CacheStats at once
+	jsonData, err = json.MarshalIndent(inspectResults, "", "  ")
+	if err != nil {
+		fmt.Println("JSON marshaling error:", err)
+		return
+	}
+	fileName := rootHash.Hex() + ".json"
+	err = os.WriteFile(trieInspectResultPathPrefix+fileName, jsonData, 0644)
+	if err != nil {
+		fmt.Println("File write error:", err)
+		return
+	}
 
 	fmt.Println("elapsed time:", time.Since(startTime))
 }
@@ -441,8 +470,8 @@ func inspectAndCopyState(ts *TrieStat, nodeHash common.Hash, depth int64, startT
 			if err != nil {
 				// this is storage trie's leaf node
 
-				ts.snapshotStats.slots++
-				ts.snapshotStats.storage += common.StorageSize(1 + 2*common.HashLength + len(value))
+				ts.SnapshotStats.Slots++
+				ts.SnapshotStats.Storage += common.StorageSize(1 + 2*common.HashLength + len(value))
 
 				if copyDB, exist := copyDBs["HS"]; exist {
 					addrHashBytes := ts.AddrHash.Bytes()
@@ -463,8 +492,8 @@ func inspectAndCopyState(ts *TrieStat, nodeHash common.Hash, depth int64, startT
 				addrHashBytes := hexToKeybytes(nodePath)
 				slimAccData := types.SlimAccountRLP(acc)
 
-				ts.snapshotStats.accounts++
-				ts.snapshotStats.storage += common.StorageSize(1 + common.HashLength + len(slimAccData))
+				ts.SnapshotStats.Accounts++
+				ts.SnapshotStats.Storage += common.StorageSize(1 + common.HashLength + len(slimAccData))
 
 				if copyDB, exist := copyDBs["HS"]; exist {
 					err := copyDB.Put(append(rawdb.SnapshotAccountPrefix[:], addrHashBytes...), slimAccData)
@@ -506,8 +535,8 @@ func inspectAndCopyState(ts *TrieStat, nodeHash common.Hash, depth int64, startT
 
 						ts.StorageTrieSizes = append(ts.StorageTrieSizes, storageTrieStat.GetTrieSize())
 						ts.StorageTrieNodeNums = append(ts.StorageTrieNodeNums, storageTrieStat.GetTrieNodeNum())
-						ts.snapshotStats.slots += storageTrieStat.snapshotStats.slots
-						ts.snapshotStats.storage += storageTrieStat.snapshotStats.storage
+						ts.SnapshotStats.Slots += storageTrieStat.SnapshotStats.Slots
+						ts.SnapshotStats.Storage += storageTrieStat.SnapshotStats.Storage
 					} else {
 						// this CA has empty storage trie
 						ts.StorageTrieSizes = append(ts.StorageTrieSizes, 0)
