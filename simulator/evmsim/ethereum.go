@@ -108,6 +108,13 @@ func setDatabase(deleteDisk bool) {
 		frdiskdb.Close()
 	}
 	if useLeveldb {
+		if common.LoggingReadStats != realleveldb.IsLogging {
+			fmt.Println("ERROR: set leveldb's branch properly -> benchmark vs noBenchmark")
+			fmt.Println("  common.LoggingReadStats:", common.LoggingReadStats)
+			fmt.Println("  realleveldb.IsLogging:", realleveldb.IsLogging)
+			os.Exit(1)
+		}
+
 		leveldbPath = leveldbPathPrefix + ServerPort
 		fmt.Println("set leveldb at:", leveldbPath)
 		// if do not delete directory, this just reopens existing db
@@ -154,7 +161,7 @@ func setDatabase(deleteDisk bool) {
 	// subNormTrieDB = trie.NewDatabaseWithConfig(diskdb, &trie.Config{Cache: trieCacheSize}) // if want to split clean caches
 	fmt.Println("trie clean cache size:", trieCacheSize, "MB")
 
-	// reset cache stats
+	// reset leveldb cache stats
 	realleveldb.ResetCacheStat(0)
 }
 

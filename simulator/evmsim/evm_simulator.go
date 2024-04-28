@@ -694,11 +694,12 @@ func connHandler(conn net.Conn) {
 				// 	common.CurrentOpcodeStat.Print()
 				// }
 				if currentBlockNum%1000 == 0 {
-					readTrieCleanCacheNum, readTrieDirtyCacheNum, readTrieCleanCacheTime, readTrieDirtyCacheTime := hashdb.ResetCacheStat()
+					if common.LoggingReadStats {
+						readTrieCleanCacheNum, readTrieDirtyCacheNum, readTrieCleanCacheTime, readTrieDirtyCacheTime := hashdb.ResetCacheStat()
 
-					leveldb.SaveCacheStat(currentBlockNum, readTrieCleanCacheNum, readTrieDirtyCacheNum, readTrieCleanCacheTime, readTrieDirtyCacheTime)
-					leveldb.ResetCacheStat(currentBlockNum + 1)
-
+						leveldb.SaveCacheStat(currentBlockNum, readTrieCleanCacheNum, readTrieDirtyCacheNum, readTrieCleanCacheTime, readTrieDirtyCacheTime)
+						leveldb.ResetCacheStat(currentBlockNum + 1)
+					}
 					if common.LoggingOpcodeStats {
 						common.SaveOpcodeStat(currentBlockNum)
 						common.ResetOpcodeStat(currentBlockNum + 1)
@@ -950,14 +951,17 @@ func connHandler(conn net.Conn) {
 				// get params
 				fmt.Println("execute saveSimBlocks()")
 
-				// print total cache stats
-				fmt.Println("Geth trie cache size:", trieCacheSize, "MB")
-				hashdb.PrintReadStats()
-				fmt.Println("LevelDB cache size:", leveldbCache, "MB")
-				leveldb.PrintTotalCacheStat()
-				leveldb.SaveCacheLogs(cacheStatsPath, "cache_stats_"+common.GetSimulationTypeName())
+				// save logged stats
+				if common.LoggingReadStats {
+					fmt.Println("Geth trie cache size:", trieCacheSize, "MB")
+					hashdb.PrintReadStats()
+					fmt.Println("LevelDB cache size:", leveldbCache, "MB")
+					leveldb.PrintTotalCacheStat()
+					// TODO(jmlee): add E_D, E_I, TH_I params to the file name
+					leveldb.SaveCacheLogs(cacheStatsPath, "cache_stats_"+common.GetSimulationTypeName())
+				}
 				if common.LoggingOpcodeStats {
-					common.SaveOpcodeLogs(opcodeStatsPath)
+					common.SaveOpcodeLogs(opcodeStatsPath, deleteEpoch, inactivateEpoch, inactivateCriterion, sweepEpoch)
 				}
 
 				fileName := params[1]
@@ -1206,8 +1210,13 @@ func connHandler(conn net.Conn) {
 					}
 				}
 
-				leveldb.ResetCacheStat(lastBlockNumToLoad + 1)
-				common.ResetOpcodeStat(lastBlockNumToLoad + 1)
+				if common.LoggingReadStats {
+					hashdb.ResetCacheStat()
+					leveldb.ResetCacheStat(currentBlockNum)
+				}
+				if common.LoggingOpcodeStats {
+					common.ResetOpcodeStat(currentBlockNum)
+				}
 
 				fmt.Println("load state success")
 				response = []byte("success")
@@ -1247,8 +1256,13 @@ func connHandler(conn net.Conn) {
 				currentBlockNum = targetBlockNum
 
 				// set cache stats of Geth trie and LevelDB
-				leveldb.ResetCacheStat(lastBlockNumToLoad + 1)
-				common.ResetOpcodeStat(lastBlockNumToLoad + 1)
+				if common.LoggingReadStats {
+					hashdb.ResetCacheStat()
+					leveldb.ResetCacheStat(currentBlockNum)
+				}
+				if common.LoggingOpcodeStats {
+					common.ResetOpcodeStat(currentBlockNum)
+				}
 
 				fmt.Println("set state root and target block number complete")
 				response = []byte("success")

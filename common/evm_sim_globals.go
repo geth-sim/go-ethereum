@@ -37,6 +37,12 @@ var (
 	OpcodeStats        = make(map[string]*OpcodeStat)
 	CurrentOpcodeStat  = NewOpcodeStat()
 
+	// choose whether logging leveldb stats or not
+	// this logging may have impact on performance
+	// and might be largely incorrect when snapshot is enabled (due to concurrent trie node prefetching)
+	// additionally, may have impact on "DiskCommits" time (need to check this)
+	LoggingReadStats = false
+
 	// flag for DoS attack
 	IsDoSAttacking    = false
 	CurrentAttackStat = NewAttackStat()
@@ -82,6 +88,11 @@ func GetSimulationTypeName() string {
 
 	// TODO(jmlee): implement path-based scheme
 	// enable path-based: P
+
+	// logging read stats: R
+	if LoggingReadStats {
+		name += "R"
+	}
 
 	// enable snapshot: S
 	if EnableSnapshot {

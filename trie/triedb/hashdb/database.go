@@ -228,11 +228,13 @@ func PrintReadStats() {
 func (db *Database) Node(hash common.Hash) ([]byte, error) {
 
 	foundPosition := ""
-	startTime := time.Now()
 	nodeSize := 0
-	defer func() {
-		saveReadLogs(foundPosition, startTime, int64(nodeSize))
-	}()
+	if common.LoggingReadStats {
+		startTime := time.Now()
+		defer func() {
+			saveReadLogs(foundPosition, startTime, int64(nodeSize))
+		}()
+	}
 
 	// It doesn't make sense to retrieve the metaroot
 	if hash == (common.Hash{}) {
