@@ -28,6 +28,8 @@ python3 evm_simulator.py <port-num> <simulation-mode> <start-block-num> <end-blo
 
 - `LoggingOpcodeStats`: measure opcodes num / time / gas cost or not
 
+- `LoggingReadStats`: measure read stats from geth & leveldb or not
+
 ## at simulator/evmsim/ethereum.go
 
 - `leveldbPathPrefix`, `leveldbPath`: path of leveldb
