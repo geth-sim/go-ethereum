@@ -1,8 +1,14 @@
 # How to run EVM simulator
 
-- at go-ethereum/simulator
+- prepare LevelDB
 
-for measuring leveldb stats, git clone https://github.com/geth-sim/goleveldb.git at the same directory as go-ethereum/ (set branch: benchmark), then
+git clone https://github.com/geth-sim/goleveldb.git at the same directory as go-ethereum/
+
+set branch as 'benchmark', then it measures leveldb stats
+
+set branch as 'noBenchmark', then it measures nothing
+
+- at go-ethereum/simulator
 
 ```shell
 go run main.go <port-num>
