@@ -1,4 +1,4 @@
-# How to run simulator
+# How to run EVM simulator
 
 - at go-ethereum/simulator
 
