@@ -20,6 +20,7 @@ import (
 	"errors"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/trie/triedb/hashdb"
 	"github.com/ethereum/go-ethereum/trie/triedb/pathdb"
@@ -35,6 +36,17 @@ type Config struct {
 
 	// Testing hooks
 	OnCommit func(states *triestate.Set) // Hook invoked when commit is performed
+}
+
+// NewTestDatabase is copied from trie/database_test.go (jmlee)
+func NewTestDatabase(diskdb ethdb.Database, scheme string) *Database {
+	db := prepare(diskdb, nil)
+	if scheme == rawdb.HashScheme {
+		db.backend = hashdb.New(diskdb, 0, mptResolver{})
+	} else {
+		db.backend = pathdb.New(diskdb, &pathdb.Config{}) // disable clean/dirty cache
+	}
+	return db
 }
 
 // backend defines the methods needed to access/update trie nodes in different

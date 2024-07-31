@@ -72,6 +72,16 @@ var (
 
 	// INF epoch length for "deleteEpoch" & "inactivateEpoch" & "sweepEpoch"
 	InfiniteEpoch = uint64(100000000)
+
+	// this is not an option, but a flag
+	// for Ethane's light inactive trie delete (jmlee)
+	DeletingInactiveTrieFlag = false
+	// test correctness of deletion in inactive trie:
+	// check if we can generate the same state root after inactivations and deletion of restored accounts
+	// when we have: only the rightmost inactive path & restore proofs VS entire inactive trie
+	TestInactiveTrieCorrectness = false
+	DeletedZeroHashNodeNum      = 0
+	ZeroHashNodeNum             = 0
 )
 
 // return simulation mode and its options

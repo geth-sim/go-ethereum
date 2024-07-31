@@ -1855,13 +1855,59 @@ func (s *StateDB) DeletePreviousAccounts() {
 // also removes restored inactive accounts
 // returns disk commit time and last used inactive key
 func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.Hash) (time.Duration, uint64) {
+
+	// ready for correctness check for deletion in light inactive trie
+	memdb := rawdb.NewMemoryDatabase()
+	memTriedb := trie.NewTestDatabase(memdb, rawdb.HashScheme)
+	var lightInactiveTrie *trie.Trie
+	inactivateKeys := make([][]byte, 0)
+	inactivateValues := make([][]byte, 0)
+	if common.TestInactiveTrieCorrectness {
+		// collect needed trie nodes: the rightmost inactive path + restore proofs
+		lastKey := s.subTrie.GetLastKey().Uint64()
+		keyToCollect := common.HexToHash(strconv.FormatUint(lastKey, 16))
+		s.subTrie.CollectTrieNodes(keyToCollect[:], memdb) // the rightmost inactive path
+		for _, key := range common.RestoredKeys {
+			s.subTrie.CollectTrieNodes(key[:], memdb) // restore proofs
+		}
+
+		// check collection result
+		it := memdb.NewIterator(nil, nil)
+		totalNodes := uint64(0)
+		totalSize := common.StorageSize(0)
+		for it.Next() {
+			var (
+				key  = it.Key()
+				size = common.StorageSize(len(key) + len(it.Value()))
+			)
+			// fmt.Println("node hash:", hex.EncodeToString(key), "/ value:", it.Value(), "/ size: ", size)
+			// fmt.Println("node hash:", hex.EncodeToString(key), "/ size: ", size)
+
+			totalNodes++
+			totalSize += size
+		}
+		fmt.Println("\nlight inactive trie stat -> total nodes:", totalNodes, "/ total size:", totalSize, "(", uint64(totalSize), "B )")
+	
+		// open light inactive trie with only few trie nodes
+		var err error
+		lightInactiveTrie, err = trie.New(trie.TrieID(s.subTrie.Hash()), memTriedb)
+		if err != nil {
+			fmt.Println("ERROR: when open light inactive trie:", err)
+			os.Exit(1)
+		}
+		fmt.Println("full inactive trie root:", s.subTrie.Hash())
+		fmt.Println("light inactive trie root:", lightInactiveTrie.Hash())
+	}
+
 	//
 	// inactivate old accounts
 	//
 
 	originalInactiveRoot := common.InactiveTrieRoot
-	inactiveNextKey := s.subTrie.GetLastKey().Uint64() + 1
+	lastKey := s.subTrie.GetLastKey().Uint64()
+	inactiveNextKey := lastKey + 1
 	inactivatedAccNum := 0
+	// fmt.Println("inactivate within full inactive trie")
 	start := time.Now()
 	for {
 		// try to delete the leftmost account (whose key should be less than last key to check)
@@ -1877,6 +1923,11 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 				os.Exit(1)
 			}
 			inactivatedAccNum++
+			if common.TestInactiveTrieCorrectness {
+				// collect inactivate pairs
+				inactivateKeys = append(inactivateKeys, keyToInsert[:])
+				inactivateValues = append(inactivateValues, enc)
+			}
 
 			// update AddrToKey (active & inactive)
 			addr := common.BytesToAddress(enc) // BytesToAddress() returns last 20 bytes into addr
@@ -1909,12 +1960,39 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	}
 	fmt.Println("InactivateOldAccounts() -> inactivated accounts num:", inactivatedAccNum)
 
+	if common.TestInactiveTrieCorrectness {
+		// inactivate old accounts
+		fmt.Println("inactivate within light inactive trie")
+		for i, key := range inactivateKeys {
+			err := lightInactiveTrie.Update(key, inactivateValues[i])
+			if err != nil {
+				fmt.Println("ERROR: inactivate in light inactive trie:", err)
+				os.Exit(1)
+			}
+		}
+		fmt.Println("  -> success")
+
+		// delete restored inactive accounts
+		fmt.Println("delete restored accounts within light inactive trie")
+		common.DeletingInactiveTrieFlag = true // TODO(jmlee): this must be true, fix correctly later
+		for _, key := range common.RestoredKeys {
+			if err := lightInactiveTrie.Update(key[:], nil); err != nil {
+				s.setError(fmt.Errorf("updateStateObject (%x) error: %v", key[:], err))
+				fmt.Println("at DeletePreviousAccounts() -> s.trie.Update() err:", err)
+				os.Exit(1)
+			}
+		}
+		common.DeletingInactiveTrieFlag = false
+		fmt.Println("  -> success")
+	}
+
 	//
 	// delete restored inactive accounts
 	//
 
 	deletedProofNum := len(common.RestoredKeys)
 	start = time.Now()
+	common.DeletingInactiveTrieFlag = true
 	for _, key := range common.RestoredKeys {
 		if err := s.subTrie.Update(key[:], nil); err != nil {
 			s.setError(fmt.Errorf("updateStateObject (%x) error: %v", key[:], err))
@@ -1922,13 +2000,27 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 			os.Exit(1)
 		}
 	}
+	common.DeletingInactiveTrieFlag = false
 	if metrics.EnabledExpensive && deletedProofNum > 0 {
 		s.UsedProofUpdtaes += time.Since(start)
 		s.UsedProofNum += deletedProofNum
 	}
 
 	fmt.Println("InactivateOldAccounts() -> deleted accounts num:", deletedProofNum)
+	fmt.Println("InactivateOldAccounts() -> zero hash node num:", common.ZeroHashNodeNum)
+	fmt.Println("InactivateOldAccounts() -> deleted zero hash node num:", common.DeletedZeroHashNodeNum)
 	common.RestoredKeys = make([]common.Hash, 0)
+	if common.TestInactiveTrieCorrectness {
+		// compare results
+		if lightInactiveTrie.Hash().Hex() != s.subTrie.Hash().Hex() {
+			fmt.Println("ERROR: ligth inactive trie deletion has an error")
+			fmt.Println("full inactive trie root:", s.subTrie.Hash().Hex())
+			fmt.Println("light inactive trie root:", lightInactiveTrie.Hash().Hex())
+			os.Exit(1)
+		} else {
+			fmt.Println("light inactive trie has no problem")
+		}
+	}
 
 	//
 	// hash active/inactive tries

@@ -435,6 +435,18 @@ func (t *Trie) Delete(key []byte) error {
 	return nil
 }
 
+// to implement light inactive trie delete for Ethane (jmlee)
+var ZeroHashNode = make(hashNode, 32)
+
+// check whether this node is zero hash node or not (jmlee)
+func IsZeroHashNode(n []byte) bool {
+	if bytes.Equal(n, ZeroHashNode) {
+		return true
+	} else {
+		return false
+	}
+}
+
 // delete returns the new root of the trie with key deleted.
 // It reduces the trie to minimal form by simplifying
 // nodes on the way up after deleting recursively.
@@ -523,6 +535,25 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 				// shortNode{..., shortNode{...}}.  Since the entry
 				// might not be loaded yet, resolve it just for this
 				// check.
+
+				// for Ethane's light inactive trie delete (jmlee)
+				if common.DeletingInactiveTrieFlag {
+					// if single child node is zeroHashNode, delete full node n as a whole
+					hn, ok := n.Children[pos].(hashNode)
+					if ok && IsZeroHashNode(hn) {
+						// fmt.Println("in trie.delete(): single child is zeroHashNode, delete the full node")
+						common.DeletedZeroHashNodeNum++
+						return true, nil, nil
+					}
+					// else, mark deleted child node as a zeroHashNode
+					// fmt.Println("in trie.delete(): leave zeroHashNode")
+					n = n.copy()
+					n.flags = t.newFlag()
+					n.Children[key[0]] = ZeroHashNode
+					common.ZeroHashNodeNum++
+					return true, n, nil
+				}
+
 				cnode, err := t.resolve(n.Children[pos], append(prefix, byte(pos)))
 				if err != nil {
 					return false, nil, err
@@ -845,7 +876,7 @@ func (t *Trie) GetLastKey() *big.Int {
 func (t *Trie) getLastKey(origNode node, lastKey []byte) *big.Int {
 	switch n := (origNode).(type) {
 	case nil:
-		return big.NewInt(0)
+		return big.NewInt(0) // root node is nil (empty trie)
 	case valueNode:
 		hexToInt := new(big.Int)
 		hexToInt.SetString(common.BytesToHash(hexToKeybytes(lastKey)).Hex()[2:], 16)
@@ -863,13 +894,14 @@ func (t *Trie) getLastKey(origNode node, lastKey []byte) *big.Int {
 		}
 		lastByte := common.HexToHash("0x" + indices[last])
 		lastKey = append(lastKey, lastByte[len(lastByte)-1])
-		// fmt.Println("at getLastKey -> lastKey: ", indices[last], "/ appended key:", indices[last], " (full node)")
+		// fmt.Println("lastByte:", lastByte[len(lastByte)-1])
+		// fmt.Println("at getLastKey -> lastKey: ", lastKey, "/ appended key:", indices[last], " (full node)")
 		return t.getLastKey(n.Children[last], lastKey)
 	case hashNode:
 		child, err := t.resolveAndTrack(n, nil)
 		if err != nil {
-			lastKey = nil
-			return big.NewInt(0)
+			fmt.Println("ERROR: getLastKey() -> in This should not happen, err:", err)
+			os.Exit(1)
 		}
 		return t.getLastKey(child, lastKey)
 	default:
