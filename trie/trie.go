@@ -26,6 +26,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
@@ -871,6 +872,77 @@ func (t *Trie) getLastKey(origNode node, lastKey []byte) *big.Int {
 			return big.NewInt(0)
 		}
 		return t.getLastKey(child, lastKey)
+	default:
+		panic(fmt.Sprintf("%T: invalid node: %v", origNode, origNode))
+	}
+}
+
+// CollectTrieNodes stores trie nodes on the key's path into nodeDb (jmlee)
+func (t *Trie) CollectTrieNodes(key []byte, nodeDb ethdb.Database) ([]byte, error) {
+	// fmt.Println("CollectTrieNodes() key:", common.BytesToHash(key).Hex())
+
+	// Short circuit if the trie is already committed and not usable.
+	if t.committed {
+		return nil, ErrCommitted
+	}
+	value, newroot, didResolve, err := t.collectTrieNodes(t.root, keybytesToHex(key), 0, nodeDb)
+	if err == nil && didResolve {
+		t.root = newroot
+	}
+
+	// collect root node
+	nodeHash := t.Hash()
+	blob, _ := t.reader.node(nil, nodeHash)
+	err = nodeDb.Put(nodeHash[:], blob)
+	if err != nil {
+		fmt.Println("ERROR: in collectTrieNodes() ->", err)
+	}
+	// fmt.Println("  in collectTrieNodes() -> nodeHash:", nodeHash.Hex(), "/ blob len:", len(blob))
+
+	return value, err
+}
+
+func (t *Trie) collectTrieNodes(origNode node, key []byte, pos int, nodeDb ethdb.Database) (value []byte, newnode node, didResolve bool, err error) {
+	switch n := (origNode).(type) {
+	case nil:
+		return nil, nil, false, nil
+	case valueNode:
+		return n, n, false, nil
+	case *shortNode:
+		if len(key)-pos < len(n.Key) || !bytes.Equal(n.Key, key[pos:pos+len(n.Key)]) {
+			// key not found in trie
+			return nil, n, false, nil
+		}
+		value, newnode, didResolve, err = t.collectTrieNodes(n.Val, key, pos+len(n.Key), nodeDb)
+		if err == nil && didResolve {
+			n = n.copy()
+			n.Val = newnode
+		}
+		return value, n, didResolve, err
+	case *fullNode:
+		value, newnode, didResolve, err = t.collectTrieNodes(n.Children[key[pos]], key, pos+1, nodeDb)
+		if err == nil && didResolve {
+			n = n.copy()
+			n.Children[key[pos]] = newnode
+		}
+		return value, n, didResolve, err
+	case hashNode:
+		// collect trie nodes
+		nodeHash := common.BytesToHash(n)
+		blob, _ := t.reader.node(key[:pos], nodeHash)
+		err := nodeDb.Put(nodeHash[:], blob)
+		if err != nil {
+			fmt.Println("ERROR: in collectTrieNodes() ->", err)
+		}
+		// fmt.Println("  in collectTrieNodes() -> nodeHash:", nodeHash.Hex(), "/ blob len:", len(blob))
+
+		// original codes
+		child, err := t.resolveAndTrack(n, key[:pos])
+		if err != nil {
+			return nil, n, true, err
+		}
+		value, newnode, _, err := t.collectTrieNodes(child, key, pos, nodeDb)
+		return value, newnode, true, err
 	default:
 		panic(fmt.Sprintf("%T: invalid node: %v", origNode, origNode))
 	}

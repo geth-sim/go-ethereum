@@ -21,6 +21,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
@@ -330,4 +331,9 @@ func (t *StateTrie) TryDeleteLeft(endKey []byte) (error, []byte) {
 // get last key among leaf nodes (i.e., right-most key value)
 func (t *StateTrie) GetLastKey() *big.Int {
 	return t.trie.GetLastKey()
+}
+
+// CollectTrieNodes stores trie nodes on the key's path into nodeDb (jmlee)
+func (t *StateTrie) CollectTrieNodes(key []byte, nodeDb ethdb.Database) ([]byte, error) {
+	return t.trie.CollectTrieNodes(key, nodeDb)
 }

@@ -147,6 +147,9 @@ type Trie interface {
 
 	// GetLastKey returns the right-most key (jmlee)
 	GetLastKey() *big.Int
+
+	// CollectTrieNodes stores trie nodes on the key's path into nodeDb (jmlee)
+	CollectTrieNodes(key []byte, nodeDb ethdb.Database) ([]byte, error)
 }
 
 // NewDatabase creates a backing store for state. The returned database is safe for

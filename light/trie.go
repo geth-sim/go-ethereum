@@ -126,6 +126,10 @@ func (t *odrTrie) GetLastKey() *big.Int {
 	panic("not implemented")
 }
 
+func (t *odrTrie) CollectTrieNodes(key []byte, nodeDb ethdb.Database) ([]byte, error) {
+	panic("not implemented")
+}
+
 func (t *odrTrie) GetStorage(_ common.Address, key []byte) ([]byte, error) {
 	key = crypto.Keccak256(key)
 	var enc []byte
