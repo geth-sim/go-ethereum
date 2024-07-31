@@ -900,7 +900,7 @@ func (t *Trie) getLastKey(origNode node, lastKey []byte) *big.Int {
 	case hashNode:
 		child, err := t.resolveAndTrack(n, nil)
 		if err != nil {
-			fmt.Println("ERROR: getLastKey() -> in This should not happen, err:", err)
+			fmt.Println("ERROR: getLastKey() -> This should not happen, err:", err)
 			os.Exit(1)
 		}
 		return t.getLastKey(child, lastKey)

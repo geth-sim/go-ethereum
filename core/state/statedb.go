@@ -1958,6 +1958,45 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 			break
 		}
 	}
+
+	// deal with corner case: no inactivation but the rightmost inactive account is restored
+	var cornerCaseKey common.Hash
+	cornerCaseHappend := false
+	if inactivatedAccNum == 0 {
+		rightmostKey := common.HexToHash(strconv.FormatUint(lastKey, 16))
+
+		for _, key := range common.RestoredKeys {
+			if rightmostKey.Hex() == key.Hex() {
+				fmt.Println("corner case happend, need to inactivate empty account")
+
+				var emptyEthaneAccount types.EthaneStateAccount
+				emptyEthaneAccount.Balance = big.NewInt(0)
+				emptyEthaneAccount.Nonce = 0
+				emptyEthaneAccount.CodeHash = types.EmptyCodeHash[:]
+				emptyEthaneAccount.Root = types.EmptyRootHash
+				enc, _ := rlp.EncodeToBytes(emptyEthaneAccount)
+				keyToInsert := common.HexToHash(strconv.FormatUint(lastKey+1, 16))
+
+				err := s.subTrie.Update(keyToInsert[:], enc)
+				if err != nil {
+					fmt.Println("ERROR in the corner case:", err)
+					os.Exit(1)
+				}
+				inactivatedAccNum++
+
+				if common.TestInactiveTrieCorrectness {
+					// collect inactivate pairs
+					inactivateKeys = append(inactivateKeys, keyToInsert[:])
+					inactivateValues = append(inactivateValues, enc)
+				}
+
+				common.NoInactivateLatestRestoreNum++
+				cornerCaseHappend = true
+				cornerCaseKey = keyToInsert
+				break
+			}
+		}
+	}
 	fmt.Println("InactivateOldAccounts() -> inactivated accounts num:", inactivatedAccNum)
 
 	if common.TestInactiveTrieCorrectness {
@@ -2009,7 +2048,13 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	fmt.Println("InactivateOldAccounts() -> deleted accounts num:", deletedProofNum)
 	fmt.Println("InactivateOldAccounts() -> zero hash node num:", common.ZeroHashNodeNum)
 	fmt.Println("InactivateOldAccounts() -> deleted zero hash node num:", common.DeletedZeroHashNodeNum)
+	fmt.Println("InactivateOldAccounts() -> corner case num:", common.NoInactivateLatestRestoreNum)
 	common.RestoredKeys = make([]common.Hash, 0)
+	if cornerCaseHappend {
+		// delete useless empty account later
+		common.RestoredKeys = append(common.RestoredKeys, cornerCaseKey)
+	}
+
 	if common.TestInactiveTrieCorrectness {
 		// compare results
 		if lightInactiveTrie.Hash().Hex() != s.subTrie.Hash().Hex() {

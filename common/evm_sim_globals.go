@@ -82,6 +82,8 @@ var (
 	TestInactiveTrieCorrectness = false
 	DeletedZeroHashNodeNum      = 0
 	ZeroHashNodeNum             = 0
+
+	NoInactivateLatestRestoreNum = 0 // corner case counter: when there is no inactivation but the rightmost inactive account is resetored
 )
 
 // return simulation mode and its options
