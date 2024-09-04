@@ -901,6 +901,8 @@ func (t *Trie) getLastKey(origNode node, lastKey []byte) *big.Int {
 		child, err := t.resolveAndTrack(n, nil)
 		if err != nil {
 			fmt.Println("ERROR: getLastKey() -> This should not happen, err:", err)
+			fmt.Println("  this can happen when the corner case is not properly handled")
+			fmt.Println("  corner case: no inactivation but the rightmost inactive account is restored")
 			os.Exit(1)
 		}
 		return t.getLastKey(child, lastKey)

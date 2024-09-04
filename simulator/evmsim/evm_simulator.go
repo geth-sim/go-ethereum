@@ -321,12 +321,18 @@ func connHandler(conn net.Conn) {
 					maxFeePerGas, _ := strconv.ParseInt(params[8], 10, 64)
 					maxFeePerGasBig := big.NewInt(maxFeePerGas)
 					txArgs.MaxFeePerGas = (*hexutil.Big)(maxFeePerGasBig)
+					
+					// gas price should be nil if maxFeePerGas or maxPriorityFeePerGas exist
+					txArgs.GasPrice = nil
 				}
 
 				if params[9] != "None" {
 					maxPriorityFeePerGas, _ := strconv.ParseInt(params[9], 10, 64)
 					maxPriorityFeePerGasBig := big.NewInt(maxPriorityFeePerGas)
 					txArgs.MaxPriorityFeePerGas = (*hexutil.Big)(maxPriorityFeePerGasBig)
+
+					// gas price should be nil if maxFeePerGas or maxPriorityFeePerGas exist
+					txArgs.GasPrice = nil
 				}
 
 				txArgsList = append(txArgsList, txArgs)
@@ -654,11 +660,12 @@ func connHandler(conn net.Conn) {
 				}
 
 				// flush to disk
+				fmt.Println("start trie.Database.Commit()")
 				start := time.Now()
 				stateDB.Database().TrieDB().Commit(currentStateRoot, false)
 				if metrics.EnabledExpensive {
 					diskCommits := time.Since(start)
-					fmt.Println("trie.Database.Commit() time:", diskCommits.Nanoseconds(), "ns")
+					fmt.Println("  trie.Database.Commit() time:", diskCommits.Nanoseconds(), "ns")
 					simBlock.DiskCommits += diskCommits
 
 					// collect performance metrics
@@ -709,12 +716,14 @@ func connHandler(conn net.Conn) {
 				}
 
 				// print trie node read stats
-				fmt.Println()
-				fmt.Println("Geth trie cache size:", trieCacheSize, "MB")
-				hashdb.PrintReadStats()
-				fmt.Println()
-				fmt.Println("LevelDB cache size:", leveldbCache, "MB")
-				leveldb.PrintReadStats()
+				if common.LoggingReadStats {
+					fmt.Println()
+					fmt.Println("Geth trie cache size:", trieCacheSize, "MB")
+					hashdb.PrintReadStats()
+					fmt.Println()
+					fmt.Println("LevelDB cache size:", leveldbCache, "MB")
+					leveldb.PrintReadStats()
+				}
 				// if common.LoggingOpcodeStats {
 				// 	common.CurrentOpcodeStat.Print()
 				// }
@@ -1001,7 +1010,7 @@ func connHandler(conn net.Conn) {
 				sort.Strings(mapKeys)
 				firstBlockNum := common.SimBlocks[mapKeys[0]].Number
 				lastBlockNum := common.SimBlocks[mapKeys[len(mapKeys)-1]].Number
-				fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + ".json"
+				fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10)
 
 				// encoding map to json
 				var jsonData []byte
@@ -1018,9 +1027,18 @@ func connHandler(conn net.Conn) {
 					}
 					jsonData, err = json.MarshalIndent(filteredSimBlocks, "", "  ")
 					fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(currentBlockNum-blockNumToSave-1, 10) + "_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
-				} else {
+				} else if common.SimulationMode == common.EthereumMode {
 					// save all SimBlocks at once
+					fileName += ".json"
 					jsonData, err = json.MarshalIndent(common.SimBlocks, "", "  ")
+				} else if common.SimulationMode == common.EthanosMode {
+					// save all SimBlocks at once
+					fileName += "_" + strconv.FormatUint(sweepEpoch, 10) + ".json"
+					jsonData, err = json.MarshalIndent(common.SimBlocks, "", "  ")
+				} else {
+					fmt.Println("ERROR: unknown simulation mode")
+					fmt.Println("  common.SimulationMode:", common.SimulationMode)
+					os.Exit(1)
 				}
 
 				if err != nil {
