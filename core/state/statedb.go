@@ -1864,7 +1864,7 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	inactivateValues := make([][]byte, 0)
 	if common.TestInactiveTrieCorrectness {
 		// collect needed trie nodes: the rightmost inactive path + restore proofs
-		lastKey := s.subTrie.GetLastKey().Uint64()
+		lastKey := s.subTrie.GetFirstOrLastKey(false).Uint64()
 		keyToCollect := common.HexToHash(strconv.FormatUint(lastKey, 16))
 		s.subTrie.CollectTrieNodes(keyToCollect[:], memdb) // the rightmost inactive path
 		for _, key := range common.RestoredKeys {
@@ -1904,7 +1904,7 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	//
 
 	originalInactiveRoot := common.InactiveTrieRoot
-	lastKey := s.subTrie.GetLastKey().Uint64()
+	lastKey := s.subTrie.GetFirstOrLastKey(false).Uint64()
 	inactiveNextKey := lastKey + 1
 	inactivatedAccNum := 0
 	// fmt.Println("inactivate within full inactive trie")

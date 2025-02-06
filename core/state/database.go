@@ -145,8 +145,8 @@ type Trie interface {
 	// TryDeleteLeft tries to inactivate leftmost account in active trie (jmlee)
 	TryDeleteLeft(endKey []byte) (error, []byte)
 
-	// GetLastKey returns the right-most key (jmlee)
-	GetLastKey() *big.Int
+	// GetFirstOrLastKey returns the left/right-most key (jmlee)
+	GetFirstOrLastKey(bool) *big.Int
 
 	// CollectTrieNodes stores trie nodes on the key's path into nodeDb (jmlee)
 	CollectTrieNodes(key []byte, nodeDb ethdb.Database) ([]byte, error)

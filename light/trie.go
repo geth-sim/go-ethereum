@@ -122,7 +122,7 @@ func (t *odrTrie) TryDeleteLeft(endKey []byte) (error, []byte) {
 	panic("not implemented")
 }
 
-func (t *odrTrie) GetLastKey() *big.Int {
+func (t *odrTrie) GetFirstOrLastKey(bool) *big.Int {
 	panic("not implemented")
 }
 

@@ -328,9 +328,9 @@ func (t *StateTrie) TryDeleteLeft(endKey []byte) (error, []byte) {
 }
 
 // (jmlee)
-// get last key among leaf nodes (i.e., right-most key value)
-func (t *StateTrie) GetLastKey() *big.Int {
-	return t.trie.GetLastKey()
+// get first or last key among leaf nodes (i.e., left/right-most key value)
+func (t *StateTrie) GetFirstOrLastKey(getFirstKey bool) *big.Int {
+	return t.trie.GetFirstOrLastKey(getFirstKey)
 }
 
 // CollectTrieNodes stores trie nodes on the key's path into nodeDb (jmlee)

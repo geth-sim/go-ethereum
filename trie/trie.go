@@ -865,47 +865,61 @@ func (t *Trie) deleteLeft(n node, prefix, endKey []byte) (bool, node, error, []b
 	}
 }
 
-// get last key among leaf nodes (i.e., right-most key value) (jmlee)
-func (t *Trie) GetLastKey() *big.Int {
-	lastKey := t.getLastKey(t.root, nil)
-	// fmt.Println("lastKey:", lastKey)
-	return lastKey
+// get first or last key among leaf nodes (i.e., left/right-most key) (jmlee)
+func (t *Trie) GetFirstOrLastKey(getFirstKey bool) *big.Int {
+	wantedKey := t.getFirstOrLastKey(t.root, nil, getFirstKey)
+	// if getFirstKey {
+	// 	fmt.Println("firstKey:", wantedKey)
+	// } else {
+	// 	fmt.Println("lastKey:", wantedKey)
+	// }
+	return wantedKey
 }
 
 // get last key among leaf nodes (i.e., right-most key value) (jmlee)
-func (t *Trie) getLastKey(origNode node, lastKey []byte) *big.Int {
+func (t *Trie) getFirstOrLastKey(origNode node, wantedKey []byte, getFirstKey bool) *big.Int {
 	switch n := (origNode).(type) {
 	case nil:
 		return big.NewInt(0) // root node is nil (empty trie)
 	case valueNode:
 		hexToInt := new(big.Int)
-		hexToInt.SetString(common.BytesToHash(hexToKeybytes(lastKey)).Hex()[2:], 16)
+		hexToInt.SetString(common.BytesToHash(hexToKeybytes(wantedKey)).Hex()[2:], 16)
 		return hexToInt
 	case *shortNode:
-		lastKey = append(lastKey, n.Key...)
-		// fmt.Println("at getLastKey -> lastKey: ", lastKey, "/ appended key:", n.Key, " (short node)")
-		return t.getLastKey(n.Val, lastKey)
+		wantedKey = append(wantedKey, n.Key...)
+		// fmt.Println("at getFirstOrLastKey -> wantedKey: ", wantedKey, "/ appended key:", n.Key, " (short node)")
+		return t.getFirstOrLastKey(n.Val, wantedKey, getFirstKey)
 	case *fullNode:
-		last := 0
+		index := -1
 		for i, node := range &n.Children {
 			if node != nil {
-				last = i
+				index = i
+				if getFirstKey {
+					hn, ok := node.(hashNode)
+					if ok && IsZeroHashNode(hn) {
+						// ignore zeroHashNode
+						continue
+					} else {
+						// find non-zeroHashNode, stop iterating
+						break
+					}
+				}
 			}
 		}
-		lastByte := common.HexToHash("0x" + indices[last])
-		lastKey = append(lastKey, lastByte[len(lastByte)-1])
-		// fmt.Println("lastByte:", lastByte[len(lastByte)-1])
-		// fmt.Println("at getLastKey -> lastKey: ", lastKey, "/ appended key:", indices[last], " (full node)")
-		return t.getLastKey(n.Children[last], lastKey)
+		wantedByte := common.HexToHash("0x" + indices[index])
+		wantedKey = append(wantedKey, wantedByte[len(wantedByte)-1])
+		// fmt.Println("wantedByte:", wantedByte[len(wantedByte)-1])
+		// fmt.Println("at getFirstOrLastKey -> wantedKey: ", wantedKey, "/ appended key:", indices[index], " (full node)")
+		return t.getFirstOrLastKey(n.Children[index], wantedKey, getFirstKey)
 	case hashNode:
 		child, err := t.resolveAndTrack(n, nil)
 		if err != nil {
-			fmt.Println("ERROR: getLastKey() -> This should not happen, err:", err)
+			fmt.Println("ERROR: getFirstOrLastKey() -> This should not happen, err:", err)
 			fmt.Println("  this can happen when the corner case is not properly handled")
 			fmt.Println("  corner case: no inactivation but the rightmost inactive account is restored")
 			os.Exit(1)
 		}
-		return t.getLastKey(child, lastKey)
+		return t.getFirstOrLastKey(child, wantedKey, getFirstKey)
 	default:
 		panic(fmt.Sprintf("%T: invalid node: %v", origNode, origNode))
 	}
