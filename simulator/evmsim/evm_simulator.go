@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/triedb/hashdb"
+	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/syndtr/goleveldb/leveldb"
 )
 
@@ -158,7 +159,7 @@ func connHandler(conn net.Conn) {
 				fromLevel, _ := strconv.ParseUint(params[4], 10, 64)
 				restoreProofFromLevel = uint(fromLevel)
 
-				if inactivateEpoch % deleteEpoch != 0 {
+				if inactivateEpoch%deleteEpoch != 0 {
 					if deleteEpoch != common.InfiniteEpoch && inactivateEpoch != common.InfiniteEpoch {
 						fmt.Println("ERROR: inactivate epoch should be multiple of delete epoch")
 						fmt.Println("  delete epoch:", deleteEpoch)
@@ -321,7 +322,7 @@ func connHandler(conn net.Conn) {
 					maxFeePerGas, _ := strconv.ParseInt(params[8], 10, 64)
 					maxFeePerGasBig := big.NewInt(maxFeePerGas)
 					txArgs.MaxFeePerGas = (*hexutil.Big)(maxFeePerGasBig)
-					
+
 					// gas price should be nil if maxFeePerGas or maxPriorityFeePerGas exist
 					txArgs.GasPrice = nil
 				}
@@ -1506,6 +1507,176 @@ func connHandler(conn net.Conn) {
 				trie.InspectAndCopyState(stateRootToInspect, frdiskdb, copyStateHash, copyStateHashSnapshot, copyStatePath, copyStatePathSnapshot)
 
 				response = []byte("success")
+
+			case "convertEthaneToEthereum":
+				// convert Ethane's state to Ethereum's (to check simulation correctness)
+
+				// get params
+				fmt.Println("execute convertEthaneToEthereum()")
+				start := time.Now()
+
+				//
+				// 1. restore all inactive accounts
+				//
+				// do not need to delete restored accounts from inactive trie before restoration
+				// since we will iterate K_I instead of inactive trie
+				// -> K_I: does not have not yet deleted restored accounts
+				// -> inactive trie: has not yet deleted restored accounts
+				//
+				fmt.Println("\n1. restore all inactive accounts")
+				fmt.Println("  active trie root before restoration:", currentStateRoot.Hex())
+				fmt.Println("  inactive account num to restore:", len(common.AddrToKeyInactive))
+				simBlock := new(common.SimBlock) // save simulation result
+				simBlock.Number = currentBlockNum
+				inactiveAddrs := make([]common.Address, 0)
+				for inactiveAddr, _ := range common.AddrToKeyInactive {
+					inactiveAddrs = append(inactiveAddrs, inactiveAddr)
+				}
+				tempFlushInterval := 1000000
+				for i := 0; i < len(inactiveAddrs); i += tempFlushInterval {
+					end := i + tempFlushInterval
+					if end > len(inactiveAddrs) {
+						end = len(inactiveAddrs)
+					}
+					accessAddrs = inactiveAddrs[i:end]
+					restoreEthaneAddrsV2(simBlock)
+				}
+				restoredAccountNum := len(inactiveAddrs)
+				fmt.Println("  active trie root after restoration:", currentStateRoot.Hex())
+				fmt.Println("  restored accounts num:", restoredAccountNum)
+				accessAddrs = make([]common.Address, 0)
+				inactiveAddrs = make([]common.Address, 0)
+
+				//
+				// 2. delete previous leaf nodes
+				//
+				fmt.Println("\n2. delete prev leaf nodes")
+				activeTrie, _ := trie.New(trie.StateTrieID(currentStateRoot), mainTrieDB)
+				if len(common.KeysToDelete) != 0 {
+					for _, key := range common.KeysToDelete {
+						if err := activeTrie.Update(key[:], nil); err != nil {
+							fmt.Println("ERROR: at DeletePreviousAccounts() -> s.trie.Update() err:", err)
+							os.Exit(1)
+						}
+					}
+					fmt.Println("  deleted previous account num:", len(common.KeysToDelete))
+					fmt.Println("  Ethane's active trie root before deletion:", currentStateRoot.Hex())
+					fmt.Println("  Ethane's active trie root after deletion:", activeTrie.Hash().Hex())
+					common.KeysToDelete = make([]common.Hash, 0)
+				} else {
+					fmt.Println("there is no previous account in active trie")
+				}
+
+				//
+				// 3. insert all active accounts to Ethereum's hash-based state trie
+				//
+				fmt.Println("\n3. insert all active accounts to Ethereum's state trie")
+				lastBlockNumStr := fmt.Sprintf("%08d", currentBlockNum-1)
+				lastSimBlock := common.SimBlocks[lastBlockNumStr]
+				newEthereumTrie, _ := trie.New(trie.StateTrieID(common.Hash{}), mainTrieDB)
+				lastKeyToCheck := common.HexToHash("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+				fmt.Println("start conversion: Ethane -> Ethereum")
+				fmt.Println("  Ethane's active trie root:", activeTrie.Hash().Hex())
+				fmt.Println("  Ethane's inactive trie root:", lastSimBlock.SubStateRoot.Hex())
+				convertedAccountNum := 0
+				fakeBlockNum := currentBlockNum
+				prevEthereumRoot := newEthereumTrie.Hash()
+				prevEthaneActiveRoot := activeTrie.Hash()
+				for {
+					// try to delete the leftmost account (whose key should be less than last key to check)
+					_, enc := activeTrie.TryDeleteLeft(lastKeyToCheck[:])
+					if enc != nil {
+						// get Ethane account
+						var ethaneAcc types.EthaneStateAccount
+						if err := rlp.DecodeBytes(enc, &ethaneAcc); err != nil {
+							fmt.Println("Failed to decode state object:", err)
+							fmt.Println("enc:", enc)
+							os.Exit(1)
+						}
+
+						// convert to Ethereum account
+						var ethereumAcc types.StateAccount
+						ethereumAcc.Balance = ethaneAcc.Balance
+						ethereumAcc.Nonce = ethaneAcc.Nonce
+						ethereumAcc.CodeHash = ethaneAcc.CodeHash
+						ethereumAcc.Root = ethaneAcc.Root
+						addrHash := crypto.Keccak256Hash(ethaneAcc.Addr[:])
+						data, encodeErr := rlp.EncodeToBytes(&ethereumAcc)
+						if encodeErr != nil {
+							fmt.Println("ERROR: in EncodeToBytes():", encodeErr)
+							os.Exit(1)
+						}
+
+						// update state trie
+						// fmt.Println("\n  convert addr:", ethaneAcc.Addr.Hex())
+						// fmt.Println("  addrHash:", addrHash.Hex())
+						// fmt.Println("  data:", data)
+						err := newEthereumTrie.Update(addrHash[:], data)
+						if err != nil {
+							fmt.Println("updateTrie fail:", err)
+							os.Exit(1)
+						}
+
+						convertedAccountNum++
+						if convertedAccountNum%tempFlushInterval == 0 {
+							// intermediate flush
+							fmt.Println("  intermediate flush at:", convertedAccountNum)
+
+							// flush Ethereum's state trie
+							if prevEthereumRoot.Hex() != newEthereumTrie.Hash().Hex() {
+								newEthereumRoot, nodes, err := newEthereumTrie.Commit(true)
+								if err != nil {
+									fmt.Println("at InactivateOldAccounts(): trie.Commit() failed")
+									fmt.Println("  err:", err)
+									os.Exit(1)
+								}
+								mainTrieDB.Update(newEthereumRoot, prevEthereumRoot, fakeBlockNum, trienode.NewWithNodeSet(nodes), nil)
+								mainTrieDB.Commit(newEthereumRoot, false)
+
+								// fmt.Println("    ethereum before:", prevEthereumRoot.Hex())
+								// fmt.Println("    ethereum after:", newEthereumTrie.Hash().Hex())
+								prevEthereumRoot = newEthereumTrie.Hash()
+								newEthereumTrie, _ = trie.New(trie.StateTrieID(prevEthereumRoot), mainTrieDB)
+							}
+
+							// flush Ethane's active trie
+							if prevEthaneActiveRoot.Hex() != activeTrie.Hash().Hex() {
+								newEthaneActiveRoot, nodes, err := activeTrie.Commit(true)
+								if err != nil {
+									fmt.Println("at InactivateOldAccounts(): trie.Commit() failed")
+									fmt.Println("  err:", err)
+									os.Exit(1)
+								}
+								mainTrieDB.Update(newEthaneActiveRoot, prevEthaneActiveRoot, fakeBlockNum, trienode.NewWithNodeSet(nodes), nil)
+								mainTrieDB.Commit(newEthaneActiveRoot, false)
+
+								// fmt.Println("    ethane before:", prevEthaneActiveRoot.Hex())
+								// fmt.Println("    ethane after:", activeTrie.Hash().Hex())
+								prevEthaneActiveRoot = activeTrie.Hash()
+								activeTrie, _ = trie.New(trie.StateTrieID(prevEthaneActiveRoot), mainTrieDB)
+							}
+
+							fakeBlockNum++
+						}
+
+					} else {
+						// conversion finished
+						break
+					}
+				}
+
+				//
+				// 4. print conversion results
+				//
+				fmt.Println("\nconvert success, ethereum trie root:", newEthereumTrie.Hash().Hex())
+				fmt.Println("  target block num:", currentBlockNum-1)
+				fmt.Println("  Ethane's active trie root:", lastSimBlock.StateRoot.Hex())
+				fmt.Println("  Ethane's inactive trie root:", lastSimBlock.SubStateRoot.Hex())
+				fmt.Println("  restored accounts num:", restoredAccountNum)
+				fmt.Println("  convertedAccountNum:", convertedAccountNum)
+				fmt.Println("  active trie after conversion:", activeTrie.Hash().Hex())
+				fmt.Println("  elapsed time:", time.Since(start))
+				response = []byte(newEthereumTrie.Hash().Hex())
 
 			case "stopSimulation":
 				fmt.Println("stop simulation")

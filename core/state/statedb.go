@@ -1887,7 +1887,7 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 			totalSize += size
 		}
 		fmt.Println("\nlight inactive trie stat -> total nodes:", totalNodes, "/ total size:", totalSize, "(", uint64(totalSize), "B )")
-	
+
 		// open light inactive trie with only few trie nodes
 		var err error
 		lightInactiveTrie, err = trie.New(trie.TrieID(s.subTrie.Hash()), memTriedb)

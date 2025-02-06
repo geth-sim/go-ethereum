@@ -597,6 +597,15 @@ def stopSimulation():
     data = client_socket.recv(1024)
     result = data.decode()
 
+# convert Ethane's state to Ethereum's (to check Ethane simulation correctness)
+def convertEthaneToEthereum():
+    cmd = str("convertEthaneToEthereum")
+
+    client_socket.send(cmd.encode())
+    data = client_socket.recv(1024)
+    result = data.decode()
+    return result
+
 # -----------------------------------------------------------
 
 # replay txs in Ethereum through EVM to simulate Ethanos
@@ -2007,6 +2016,17 @@ if __name__ == "__main__":
         # simulateEthaneEVM(startBlockNum, endBlockNum, deleteEpoch, inactivateEpoch, inactivateCriterion, fromLevel, temp_result_save_inteval)
         haveRestoreList = False # v2 does not need restore list
         simulateEthaneEVM_v2(startBlockNum, endBlockNum, deleteEpoch, inactivateEpoch, inactivateCriterion, fromLevel, temp_result_save_inteval)
+        
+        # optional: check Ethane's correctness
+        # print("\nsimulation finished, try to check Ethane's correctenss")
+        # converted_hash = convertEthaneToEthereum()
+        # eth_header = select_block_header(cursor, endBlockNum)
+        # print("  converted hash:", converted_hash)
+        # print("  ethereum hash:", "0x"+eth_header['stateroot'].hex())
+        # if converted_hash == "0x"+eth_header['stateroot'].hex():
+        #     print("  -> CORRECT result")
+        # else:
+        #     print("  -> WRONG result")
     elif simulationMode == 5:
         simulateEthanosEVM(startBlockNum, endBlockNum, inactivateCriterion, fromLevel, temp_result_save_inteval)
     else:
