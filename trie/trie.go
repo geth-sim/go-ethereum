@@ -928,11 +928,6 @@ func (t *Trie) getFirstOrLastKey(origNode node, wantedKey []byte, getFirstKey bo
 // CollectTrieNodes stores trie nodes on the key's path into nodeDb (jmlee)
 func (t *Trie) CollectTrieNodes(key []byte, nodeDb ethdb.Database) ([]byte, error) {
 	// fmt.Println("CollectTrieNodes() key:", common.BytesToHash(key).Hex())
-
-	// Short circuit if the trie is already committed and not usable.
-	if t.committed {
-		return nil, ErrCommitted
-	}
 	value, newroot, didResolve, err := t.collectTrieNodes(t.root, keybytesToHex(key), 0, nodeDb)
 	if err == nil && didResolve {
 		t.root = newroot
