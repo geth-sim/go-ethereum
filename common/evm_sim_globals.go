@@ -24,20 +24,20 @@ var (
 	// simulation results, SimBlocks[blockNumStr] = SimBlock
 	SimBlocks = make(map[string]*SimBlock)
 
-	// enable snapshot or not
+	// option: enable snapshot or not
 	EnableSnapshot = false
 
-	// prefixing trie node's hash value with block number
+	// option: prefixing trie node's hash value with block number
 	EnableNodePrefixing = false
-	// actually, this may be prefix bytes (ex. PrefixLength = 3 -> prefixes 6 characters)
+	// option: actually, this may be prefix bytes (ex. PrefixLength = 3 -> prefixes 6 characters)
 	PrefixLength = 0
 
-	// opcode stats (opcode execution num/time/cost)
+	// option: logging opcode stats (opcode execution num/time/cost)
 	LoggingOpcodeStats = false
 	OpcodeStats        = make(map[string]*OpcodeStat)
 	CurrentOpcodeStat  = NewOpcodeStat()
 
-	// choose whether logging leveldb stats or not
+	// option: choose whether logging leveldb stats or not
 	// this logging may have impact on performance
 	// and might be largely incorrect when snapshot is enabled (due to concurrent trie node prefetching)
 	// additionally, may have impact on "DiskCommits" time (need to check this)
@@ -64,6 +64,8 @@ var (
 	RestoredKeys      = make([]Hash, 0)          // D_I
 
 	InactiveTrieRoot Hash
+	FirstInactiveKey uint64
+	LastInactiveKey uint64
 
 	// next key to insert new account in active trie
 	NextKey  = uint64(1)
@@ -76,7 +78,7 @@ var (
 	// this is not an option, but a flag
 	// for Ethane's light inactive trie delete (jmlee)
 	DeletingInactiveTrieFlag = false
-	// test correctness of deletion in inactive trie:
+	// option: test correctness of deletion in inactive trie
 	// check if we can generate the same state root after inactivations and deletion of restored accounts
 	// when we have: only the rightmost inactive path & restore proofs VS entire inactive trie
 	TestInactiveTrieCorrectness = false
@@ -84,6 +86,18 @@ var (
 	ZeroHashNodeNum             = 0
 
 	NoInactivateLatestRestoreNum = 0 // corner case counter: when there is no inactivation but the rightmost inactive account is resetored
+
+	// option: measure KeysToDelete-related stats
+	// this affects performance and disk state. so enable this option only when to measure KeysToDelete stats
+	MeasureKeysToDeleteStat            = false
+	FlushAfterDeletion                 = false // this is flag
+	FlushBeforeDeletion                = false // this is flag
+	TouchedTrieNodesNumDueToDeletion   int
+	TouchedTrieNodesSizeDueToDeletion  int
+	FlushedTrieNodesNumDueToDeletion   int
+	FlushedTrieNodesSizeDueToDeletion  int
+	FlushedTrieNodesNumDueToInsertion  int // TODO(jmlee): this contains storage trie nodes, can we split this stat?
+	FlushedTrieNodesSizeDueToInsertion int // TODO(jmlee): this contains storage trie nodes, can we split this stat?
 )
 
 // return simulation mode and its options
@@ -119,11 +133,13 @@ func GetSimulationTypeName() string {
 
 // store simulation results as a block with performance metrics
 type SimBlock struct {
-	Number          uint64 // block number
-	StateRoot       Hash   // state trie root
-	SubStateRoot    Hash   // cached trie root (Ethanos) or inactive trie root (Ethane)
-	LastActiveKey   uint64 // last used key in active trie in this block (similar to CheckpointKey)
-	LastInactiveKey uint64 // last used key in inactive trie in this block (similar to InactiveBoundaryKey)
+	Number           uint64 // block number
+	StateRoot        Hash   // state trie root
+	SubStateRoot     Hash   // cached trie root (Ethanos) or inactive trie root (Ethane)
+	FirstActiveKey   uint64
+	LastActiveKey    uint64 // last used key in active trie in this block (similar to CheckpointKey)
+	FirstInactiveKey uint64
+	LastInactiveKey  uint64 // last used key in inactive trie in this block (similar to InactiveBoundaryKey)
 
 	// payment tx num & execution time
 	PaymentTxLen      uint64
@@ -179,9 +195,21 @@ type SimBlock struct {
 	VoidAccountReads   time.Duration // for fair comparison, Ethane reads random account when desired account does not exist
 	// do not measure commit times independently for deletion and inactivation
 	// just add to other metrics (AccountCommits, TrieDBCommits, DiskCommits)
-	DeleteNum         int
-	DeleteUpdates     time.Duration
-	DeleteHashes      time.Duration
+	DeleteNum                          int
+	DeleteUpdates                      time.Duration
+	DeleteHashes                       time.Duration
+	DeleteKeysAvg                      float64 // avg of KeysToDelete
+	DeleteKeysStd                      float64 // std of KeysToDelete
+	TouchedTrieNodesNumDueToDeletion   int
+	TouchedTrieNodesSizeDueToDeletion  int
+	FlushedTrieNodesNumDueToDeletion   int
+	FlushedTrieNodesSizeDueToDeletion  int
+	FlushedTrieNodesNumDueToInsertion  int
+	FlushedTrieNodesSizeDueToInsertion int
+
+	AddrToKeyActiveLen int
+	AddrToKeyInactiveLen int
+
 	InactivateNum     int
 	InactivateUpdates time.Duration
 	InactivateHashes  time.Duration

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"sort"
@@ -163,6 +164,8 @@ type StateDB struct {
 	DeleteNum          int
 	DeleteUpdates      time.Duration
 	DeleteHashes       time.Duration
+	DeleteKeysAvg      float64
+	DeleteKeysStd      float64
 	InactivateNum      int
 	InactivateUpdates  time.Duration
 	InactivateHashes   time.Duration
@@ -1828,6 +1831,55 @@ func (s *StateDB) DeletePreviousAccounts() {
 		return
 	}
 
+	// measure KeysToDelete's stat
+	if common.MeasureKeysToDeleteStat {
+		// avg
+		keySum := uint64(0)
+		for _, key := range common.KeysToDelete {
+			keySum += key.Big().Uint64()
+		}
+		keyAvg := float64(keySum) / float64(len(common.KeysToDelete))
+		// var
+		varSum := float64(0)
+		for _, key := range common.KeysToDelete {
+			diff := float64(key.Big().Uint64()) - keyAvg
+			varSum += diff * diff
+		}
+		keyVar := varSum / float64(len(common.KeysToDelete))
+		keyStd := math.Sqrt(keyVar)
+		fmt.Println("keys to delete stat")
+		fmt.Println("  -> num:", len(common.KeysToDelete))
+		fmt.Println("  -> avg:", keyAvg)
+		fmt.Println("  -> var:", keyVar)
+		fmt.Println("  -> std:", keyStd)
+		s.DeleteKeysAvg = keyAvg
+		s.DeleteKeysStd = keyStd
+
+		// # of impacted trie nodes
+		memdb := rawdb.NewMemoryDatabase()
+		for _, key := range common.KeysToDelete {
+			s.trie.CollectTrieNodes(key[:], memdb)
+		}
+		it := memdb.NewIterator(nil, nil)
+		totalNodes := 0
+		totalSize := common.StorageSize(0)
+		for it.Next() {
+			var (
+				key  = it.Key()
+				size = common.StorageSize(len(key) + len(it.Value()))
+			)
+			// fmt.Println("node hash:", hex.EncodeToString(key), "/ value:", it.Value(), "/ size: ", size)
+			// fmt.Println("node hash:", hex.EncodeToString(key), "/ size: ", size)
+
+			totalNodes++
+			totalSize += size
+		}
+		// fmt.Println("\ntrie nodes for deletion -> total nodes:", totalNodes, "/ total size:", totalSize, "(", uint64(totalSize), "B )")
+		common.TouchedTrieNodesNumDueToDeletion = totalNodes
+		common.TouchedTrieNodesSizeDueToDeletion = int(totalSize)
+	}
+
+	// delete previous accounts
 	start := time.Now()
 	for _, key := range common.KeysToDelete {
 		if err := s.trie.Update(key[:], nil); err != nil {
@@ -2013,7 +2065,7 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 
 		// delete restored inactive accounts
 		fmt.Println("delete restored accounts within light inactive trie")
-		common.DeletingInactiveTrieFlag = true // TODO(jmlee): this must be true, fix correctly later
+		common.DeletingInactiveTrieFlag = true
 		for _, key := range common.RestoredKeys {
 			if err := lightInactiveTrie.Update(key[:], nil); err != nil {
 				s.setError(fmt.Errorf("updateStateObject (%x) error: %v", key[:], err))
@@ -2087,6 +2139,9 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	// commit inactive trie
 	//
 
+	common.FirstInactiveKey = s.subTrie.GetFirstOrLastKey(true).Uint64()
+	common.LastInactiveKey = s.subTrie.GetFirstOrLastKey(false).Uint64()
+
 	start = time.Now()
 	newInactiveRoot, nodes, err := s.subTrie.Commit(true)
 	if err != nil {
@@ -2110,6 +2165,24 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 
 	common.InactiveTrieRoot = newInactiveRoot
 	return diskCommits, inactiveNextKey - 1
+}
+
+func (s *StateDB) GetFirstActiveKey() *big.Int {
+	return s.trie.GetFirstOrLastKey(true)
+}
+
+func (s *StateDB) GetFirstInactiveKey() *big.Int {
+	fmt.Println("GetFirstInactiveKey() -> root:", s.subTrie.Hash().Hex())
+	return s.subTrie.GetFirstOrLastKey(true)
+}
+
+func (s *StateDB) GetLastActiveKey() *big.Int {
+	return s.trie.GetFirstOrLastKey(false)
+}
+
+func (s *StateDB) GetLastInactiveKey() *big.Int {
+	fmt.Println("GetLastInactiveKey() -> root:", s.subTrie.Hash().Hex())
+	return s.subTrie.GetFirstOrLastKey(false)
 }
 
 // (jmlee)
@@ -2202,6 +2275,8 @@ func (s *StateDB) SaveMeters(simBlock *common.SimBlock) {
 	simBlock.DeleteNum = s.DeleteNum
 	simBlock.DeleteUpdates = s.DeleteUpdates
 	simBlock.DeleteHashes = s.DeleteHashes
+	simBlock.DeleteKeysAvg = s.DeleteKeysAvg
+	simBlock.DeleteKeysStd = s.DeleteKeysStd
 	simBlock.InactivateNum = s.InactivateNum
 	simBlock.InactivateUpdates = s.InactivateUpdates
 	simBlock.InactivateHashes = s.InactivateHashes

@@ -626,8 +626,45 @@ func connHandler(conn net.Conn) {
 						common.KeysToDelete = make([]common.Hash, 0)
 					}
 					if (currentBlockNum+1)%deleteEpoch == 0 {
+						// detailed measurement for KeysToDelete stats
+						if common.MeasureKeysToDeleteStat {
+							common.FlushedTrieNodesNumDueToInsertion = 0
+							common.FlushedTrieNodesSizeDueToInsertion = 0
+							common.FlushBeforeDeletion = true
+							currentStateRoot, _ = stateDB.Commit(currentBlockNum, deleteEmptyObjects)
+							stateDB.Database().TrieDB().Commit(currentStateRoot, false)
+							common.FlushBeforeDeletion = false
+							common.TouchedTrieNodesNumDueToDeletion = 0
+							common.TouchedTrieNodesSizeDueToDeletion = 0
+						}
+
 						stateDB.IntermediateRoot(deleteEmptyObjects) // apply remained modifications before deletion
 						stateDB.DeletePreviousAccounts()
+
+						// detailed measurement for KeysToDelete stats
+						if common.MeasureKeysToDeleteStat {
+							common.FlushedTrieNodesNumDueToDeletion = 0
+							common.FlushedTrieNodesSizeDueToDeletion = 0
+							common.FlushAfterDeletion = true
+							currentStateRoot, _ = stateDB.Commit(currentBlockNum, deleteEmptyObjects)
+							stateDB.Database().TrieDB().Commit(currentStateRoot, false)
+							common.FlushAfterDeletion = false
+							fmt.Println("measure deletion stats")
+							fmt.Println("  -> TouchedTrieNodesNumDueToDeletion:", common.TouchedTrieNodesNumDueToDeletion)
+							fmt.Println("  -> TouchedTrieNodesSizeDueToDeletion:", common.TouchedTrieNodesSizeDueToDeletion, "B")
+							fmt.Println("  -> FlushedTrieNodesNumDueToDeletion:", common.FlushedTrieNodesNumDueToDeletion)
+							fmt.Println("  -> FlushedTrieNodesSizeDueToDeletion:", common.FlushedTrieNodesSizeDueToDeletion, "B")
+							fmt.Println("  -> FlushedTrieNodesNumDueToInsertion:", common.FlushedTrieNodesNumDueToInsertion)
+							fmt.Println("  -> FlushedTrieNodesSizeDueToInsertion:", common.FlushedTrieNodesSizeDueToInsertion, "B")
+
+							simBlock.TouchedTrieNodesNumDueToDeletion = common.TouchedTrieNodesNumDueToDeletion
+							simBlock.TouchedTrieNodesSizeDueToDeletion = common.TouchedTrieNodesSizeDueToDeletion
+							simBlock.FlushedTrieNodesNumDueToDeletion = common.FlushedTrieNodesNumDueToDeletion
+							simBlock.FlushedTrieNodesSizeDueToDeletion = common.FlushedTrieNodesSizeDueToDeletion
+							simBlock.FlushedTrieNodesNumDueToInsertion = common.FlushedTrieNodesNumDueToInsertion
+							simBlock.FlushedTrieNodesSizeDueToInsertion = common.FlushedTrieNodesSizeDueToInsertion
+						}
+
 					}
 					if (currentBlockNum+1)%inactivateEpoch == 0 && currentBlockNum >= inactivateCriterion {
 						blockNumStr := fmt.Sprintf("%08d", currentBlockNum-inactivateCriterion)
@@ -656,8 +693,24 @@ func connHandler(conn net.Conn) {
 				if common.SimulationMode == common.EthaneMode {
 					// save inactive trie root
 					simBlock.SubStateRoot = common.InactiveTrieRoot
+					// fmt.Println("substateroot:", common.InactiveTrieRoot.Hex())
+
+					// save leftmost key of active trie
+					simBlock.FirstActiveKey = stateDB.GetFirstActiveKey().Uint64()
 					// save last written key (checkpointKey)
 					simBlock.LastActiveKey = common.NextKey - 1
+					simBlock.FirstInactiveKey = common.FirstInactiveKey
+					simBlock.LastInactiveKey = common.LastInactiveKey
+					// fmt.Println("  first active key:", simBlock.FirstActiveKey)
+					// fmt.Println("  last active key:", simBlock.LastActiveKey)
+					// fmt.Println("  first inactive key:", simBlock.FirstInactiveKey)
+					// fmt.Println("  last inactive key:", simBlock.LastInactiveKey)
+
+					// save len of index
+					simBlock.AddrToKeyActiveLen = len(common.AddrToKeyActive)
+					simBlock.AddrToKeyInactiveLen = len(common.AddrToKeyInactive)
+					// fmt.Println("  AddrToKeyActiveLen:", simBlock.AddrToKeyActiveLen)
+					// fmt.Println("  AddrToKeyInactiveLen:", simBlock.AddrToKeyInactiveLen)
 				}
 
 				// flush to disk
