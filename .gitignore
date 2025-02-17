@@ -50,3 +50,8 @@ profile.cov
 logs/
 
 tests/spec-tests/
+
+
+
+# evm simulator
+/simulator/logFiles/

@@ -304,6 +304,14 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 		vmConfig:      vmConfig,
 	}
 	bc.flushInterval.Store(int64(cacheConfig.TrieTimeLimit))
+	fmt.Println("TrieTimeLimit:", int64(cacheConfig.TrieTimeLimit), " ", cacheConfig.TrieTimeLimit)
+	fmt.Println("bc.flushInterval:", bc.flushInterval)
+	fmt.Println("cacheConfig:", cacheConfig)
+	fmt.Println("trie cacheConfig:", cacheConfig.triedbConfig())
+	fmt.Println("trie cacheConfig.HashDB:", cacheConfig.triedbConfig().HashDB)
+	fmt.Println("trie cacheConfig.PathDB:", cacheConfig.triedbConfig().PathDB)
+	fmt.Println("triedb:", triedb)
+	// os.Exit(1)
 	bc.forker = NewForkChoice(bc, shouldPreserve)
 	bc.stateCache = state.NewDatabaseWithNodeDB(bc.db, bc.triedb)
 	bc.validator = NewBlockValidator(chainConfig, bc, engine)

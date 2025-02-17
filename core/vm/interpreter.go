@@ -17,6 +17,8 @@
 package vm
 
 import (
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -169,11 +171,20 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	// explicit STOP, RETURN or SELFDESTRUCT is executed, an error occurred during
 	// the execution of one of the operations or until the done flag is set by the
 	// parent context.
+
+	var opStartTime time.Time
+	if common.LoggingOpcodeStats || common.IsDoSAttacking {
+		// fmt.Println("contract call start")
+		common.CurrentOpcodeStat.ContractCallNum++
+		opStartTime = time.Now()
+	}
+
 	for {
 		if debug {
 			// Capture pre-execution values for tracing.
 			logged, pcCopy, gasCopy = false, pc, contract.Gas
 		}
+		beforeGas := contract.Gas
 		// Get the operation from the jump table and validate the stack to ensure there are
 		// enough stack items available to perform the operation.
 		op = contract.GetOp(pc)
@@ -232,6 +243,29 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			break
 		}
 		pc++
+
+		// logging stats
+		if common.LoggingOpcodeStats || common.IsDoSAttacking {
+			elapsedTime := time.Since(opStartTime).Nanoseconds()
+			opcodeStr := op.String()
+			// opcode's gas cost considering refund (if refund is executed, then "opcodeCost" != "cost")
+			opcodeCost := beforeGas - contract.Gas
+			// fmt.Println("  opcode:", opcodeStr, "-> elapsed time:", elapsedTime, "ns / gas cost:", opcodeCost)
+
+			if common.LoggingOpcodeStats {
+				common.CurrentOpcodeStat.OpcodeNums[opcodeStr]++
+				common.CurrentOpcodeStat.OpcodeExecutes[opcodeStr] += elapsedTime
+				common.CurrentOpcodeStat.OpcodeCosts[opcodeStr] += opcodeCost
+			}
+
+			if common.IsDoSAttacking {
+				common.CurrentAttackStat.OpcodeNames = append(common.CurrentAttackStat.OpcodeNames, opcodeStr)
+				common.CurrentAttackStat.ExecutionTimes = append(common.CurrentAttackStat.ExecutionTimes, elapsedTime)
+				common.CurrentAttackStat.GasCosts = append(common.CurrentAttackStat.GasCosts, opcodeCost)
+			}
+
+			opStartTime = time.Now()
+		}
 	}
 
 	if err == errStopToken {

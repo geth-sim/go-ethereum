@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
@@ -178,9 +179,78 @@ func (db *Database) insert(hash common.Hash, node []byte) {
 	db.dirtiesSize += common.StorageSize(common.HashLength + len(node))
 }
 
+var (
+	// trie node read stats ("clean", "dirty", "disk")
+	logMutex          sync.Mutex
+	nodeReadPositions = make(map[string]int64)
+	nodeReadSizes     = make(map[string]int64)
+	nodeReadTimes     = make(map[string]int64) // note: actually, "dirty"'s time contains "clean", and "disk"'s time contains "clean" & "dirty"
+)
+
+func ResetCacheStat() (map[string]int64, map[string]int64, map[string]int64, int64) {
+	// copy stats
+	nums := make(map[string]int64)
+	times := make(map[string]int64)
+	sizes := make(map[string]int64)
+	for key, value := range nodeReadPositions {
+		nums[key] = value
+		times[key] = nodeReadTimes[key]
+		sizes[key] = nodeReadSizes[key]
+	}
+
+	// reset buffers
+	nodeReadPositions = make(map[string]int64)
+	nodeReadTimes = make(map[string]int64)
+	nodeReadSizes = make(map[string]int64)
+
+	// hashDB does not have diff layer's depth sum, just return 0
+	return nums, times, sizes, 0	
+}
+
+func saveReadLogs(position string, startTime time.Time, nodeSize int64) {
+	readTime := time.Since(startTime)
+	logMutex.Lock()
+	nodeReadPositions[position] += 1
+	nodeReadTimes[position] += readTime.Nanoseconds()
+	nodeReadSizes[position] += nodeSize
+	logMutex.Unlock()
+}
+
+func PrintReadStats() {
+	totalCnt := int64(0)
+	totalTime := int64(0)
+	fmt.Println("print node read stats of GETH")
+
+	mapKeys := make([]string, 0)
+	for k, _ := range nodeReadPositions {
+		mapKeys = append(mapKeys, k)
+	}
+	sort.Strings(mapKeys)
+
+	for _, position := range mapKeys {
+		fmt.Println("  at position", position, "-> avg:", nodeReadTimes[position]/nodeReadPositions[position], "ns (cnt:", nodeReadPositions[position], "/ time:", nodeReadTimes[position], ")")
+		totalCnt += nodeReadPositions[position]
+		totalTime += nodeReadTimes[position]
+	}
+	if totalCnt > 0 {
+		fmt.Println("    => total -> avg:", totalTime/totalCnt, "ns (cnt:", totalCnt, "/ time:", totalTime, ")")
+		fmt.Println("    => node cache hit rate:", float64(totalCnt-nodeReadPositions["disk"])/float64(totalCnt)*100, "%")
+	}
+}
+
 // node retrieves an encoded cached trie node from memory. If it cannot be found
 // cached, the method queries the persistent database for the content.
 func (db *Database) node(hash common.Hash) ([]byte, error) {
+
+	foundPosition := ""
+	nodeSize := 0
+	if common.LoggingReadStats {
+		startTime := time.Now()
+		defer func() {
+			saveReadLogs(foundPosition, startTime, int64(nodeSize))
+		}()
+	}
+
 	// It doesn't make sense to retrieve the metaroot
 	if hash == (common.Hash{}) {
 		return nil, errors.New("not found")
@@ -188,6 +258,8 @@ func (db *Database) node(hash common.Hash) ([]byte, error) {
 	// Retrieve the node from the clean cache if available
 	if db.cleans != nil {
 		if enc := db.cleans.Get(nil, hash[:]); enc != nil {
+			foundPosition = "clean"
+			nodeSize = len(enc)
 			memcacheCleanHitMeter.Mark(1)
 			memcacheCleanReadMeter.Mark(int64(len(enc)))
 			return enc, nil
@@ -202,6 +274,8 @@ func (db *Database) node(hash common.Hash) ([]byte, error) {
 	// The dirty.node field is immutable and safe to read it
 	// even without lock guard.
 	if dirty != nil {
+		foundPosition = "dirty"
+		nodeSize = len(dirty.node)
 		memcacheDirtyHitMeter.Mark(1)
 		memcacheDirtyReadMeter.Mark(int64(len(dirty.node)))
 		return dirty.node, nil
@@ -211,6 +285,8 @@ func (db *Database) node(hash common.Hash) ([]byte, error) {
 	// Content unavailable in memory, attempt to retrieve from disk
 	enc := rawdb.ReadLegacyTrieNode(db.diskdb, hash)
 	if len(enc) != 0 {
+		foundPosition = "disk"
+		nodeSize = len(enc)
 		if db.cleans != nil {
 			db.cleans.Set(hash[:], enc)
 			memcacheCleanMissMeter.Mark(1)
@@ -218,6 +294,9 @@ func (db *Database) node(hash common.Hash) ([]byte, error) {
 		}
 		return enc, nil
 	}
+
+	foundPosition = "notFound"
+	nodeSize = 0
 	return nil, errors.New("not found")
 }
 

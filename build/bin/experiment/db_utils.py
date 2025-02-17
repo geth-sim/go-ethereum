@@ -88,6 +88,13 @@ def select_txs(cursor, blocknumber):
     result = cursor.fetchall()
     return result
 
+# read tx's access lists in this block from DB
+def select_txs_access_list(cursor, blocknumber):
+    sql = "SELECT * FROM `transactions_accesslist` WHERE `blocknumber`=%s;"
+    cursor.execute(sql, (blocknumber,))
+    result = cursor.fetchall()
+    return result
+
 # read accounts r/w list in this block from DB
 def select_account_read_write_list(cursor, blocknumber):
     sql = "SELECT * FROM `states` WHERE `blocknumber`=%s;"

@@ -51,6 +51,7 @@ var (
 	errSymlinkDatadir = errors.New("symbolic link datadir is not supported")
 )
 
+// TODO(jmlee): state history file의 최대크기인듯한데 왜 이걸 줄여도 별 영향이 없는 것 같지? 확인해볼것
 // freezerTableSize defines the maximum size of freezer data files.
 const freezerTableSize = 2 * 1000 * 1000 * 1000
 

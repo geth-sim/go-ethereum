@@ -170,6 +170,30 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *commo
 	return applyTransaction(msg, config, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
 }
 
+// execute TxArgs instead of Tx (jmlee)
+// ApplyTransactionArgs converts txArgs as tx,
+// then attempts to apply a transaction to the given state database
+// and uses the input parameters for its environment. It returns the receipt
+// for the transaction, gas used and an error if the transaction failed,
+// indicating the block was invalid.
+// CAUTION: some of receipt data is wrongly written
+func ApplyTransactionArgs(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, txArgs *TransactionArgs, usedGas *uint64, cfg vm.Config) (*types.Receipt, error) {
+	tx := txArgs.ToTransaction() // tx is only important for receipt, msg is actually important for executing tx
+
+	msg, err := txArgs.ToMessage(0, header.BaseFee)
+	if err != nil {
+		return nil, err
+	}
+	// Create a new context to be used in the EVM environment
+	blockContext := NewEVMBlockContext(header, bc, author)
+	// fmt.Println("at ApplyTransaction()")
+	// fmt.Println("  blocknum:", header.Number)
+	// fmt.Println("  difficulty:", header.Difficulty)
+	// fmt.Println("  random:", blockContext.Random.Hex())
+	vmenv := vm.NewEVM(blockContext, vm.TxContext{BlobHashes: tx.BlobHashes()}, statedb, config, cfg)
+	return applyTransaction(msg, config, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
+}
+
 // ProcessBeaconBlockRoot applies the EIP-4788 system call to the beacon block root
 // contract. This method is exported to be used in tests.
 func ProcessBeaconBlockRoot(beaconRoot common.Hash, vmenv *vm.EVM, statedb *state.StateDB) {

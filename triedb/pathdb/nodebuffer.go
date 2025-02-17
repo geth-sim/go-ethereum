@@ -252,6 +252,7 @@ func writeNodes(batch ethdb.Batch, nodes map[common.Hash]map[string]*trienode.No
 				}
 			} else {
 				if owner == (common.Hash{}) {
+					// flag : path based에선 여기서 db에다가 trie node를 write 함
 					rawdb.WriteAccountTrieNode(batch, []byte(path), n.Blob)
 				} else {
 					rawdb.WriteStorageTrieNode(batch, owner, []byte(path), n.Blob)

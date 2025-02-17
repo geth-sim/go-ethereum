@@ -386,6 +386,7 @@ func (g *Genesis) IsVerkle() bool {
 // ToBlock returns the genesis block according to genesis specification.
 func (g *Genesis) ToBlock() *types.Block {
 	root, err := hashAlloc(&g.Alloc, g.IsVerkle())
+	common.GenesisStateRoot = root // genesis state root can differ from the default value due to trie node prefixing (jmlee)
 	if err != nil {
 		panic(err)
 	}

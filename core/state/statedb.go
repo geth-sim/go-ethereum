@@ -136,6 +136,10 @@ type StateDB struct {
 	AccountDeleted int
 	StorageDeleted int
 
+	// additional measurements (jmlee)
+	AccountReadNum         int // how many account read occurs
+	NonExistAccountReadNum int // # of reads to find non-exist account
+
 	// Testing hooks
 	onCommit func(states *triestate.Set) // Hook invoked when commit is performed
 }
@@ -562,7 +566,11 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	if obj := s.stateObjects[addr]; obj != nil {
 		return obj
 	}
+
 	// If no live objects are available, attempt to use snapshots
+	if metrics.EnabledExpensive {
+		s.AccountReadNum++
+	}
 	var data *types.StateAccount
 	if s.snap != nil {
 		start := time.Now()
@@ -572,6 +580,9 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		}
 		if err == nil {
 			if acc == nil {
+				if metrics.EnabledExpensive {
+					s.NonExistAccountReadNum++
+				}
 				return nil
 			}
 			data = &types.StateAccount{
@@ -601,6 +612,9 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 			return nil
 		}
 		if data == nil {
+			if metrics.EnabledExpensive {
+				s.NonExistAccountReadNum++
+			}
 			return nil
 		}
 	}
@@ -1277,7 +1291,13 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 	if root != origin {
 		start := time.Now()
 		set := triestate.New(s.accountsOrigin, s.storagesOrigin, incomplete)
+		// TODO(jmlee): path-based인 경우 여기가 초반부에 굉장히 느림
+		// 실험해보니 아마 초반부/trie가아직작을때 는 path-based 의 성능이 특히 안좋은듯
+		// 나중 가면 대략 비슷한 수준인거 같음, 한 5M블록 정도
+		// 참고: https://github.com/ethereum/go-ethereum/issues/28266
 		if err := s.db.TrieDB().Update(root, origin, block, nodes, set); err != nil {
+			// TODO(jmlee): here error
+			fmt.Println("statedb.Commit() err 6")
 			return common.Hash{}, err
 		}
 		s.originalRoot = root
@@ -1407,4 +1427,30 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 		}
 	}
 	return copied
+}
+
+func (s *StateDB) SaveMeters(simBlock *common.SimBlock) {
+
+	//
+	// stateDB metrics
+	//
+	simBlock.AccountReads = s.AccountReads
+	simBlock.AccountReadNum = s.AccountReadNum
+	simBlock.NonExistAccountReadNum = s.NonExistAccountReadNum
+	simBlock.AccountHashes = s.AccountHashes
+	simBlock.AccountUpdates = s.AccountUpdates
+	simBlock.AccountCommits = s.AccountCommits
+	simBlock.StorageReads = s.StorageReads
+	simBlock.StorageHashes = s.StorageHashes
+	simBlock.StorageUpdates = s.StorageUpdates
+	simBlock.StorageCommits = s.StorageCommits
+	simBlock.SnapshotAccountReads = s.SnapshotAccountReads
+	simBlock.SnapshotStorageReads = s.SnapshotStorageReads
+	simBlock.SnapshotCommits = s.SnapshotCommits
+	simBlock.TrieDBCommits = s.TrieDBCommits
+
+	simBlock.AccountUpdated = common.AccountUpdated
+	simBlock.StorageUpdated = common.StorageUpdated
+	simBlock.AccountDeleted = common.AccountDeleted
+	simBlock.StorageDeleted = common.StorageDeleted
 }

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -98,6 +99,8 @@ func (c *Config) sanitize() *Config {
 	conf := *c
 	if conf.DirtyCacheSize > maxBufferSize {
 		log.Warn("Sanitizing invalid node buffer size", "provided", common.StorageSize(conf.DirtyCacheSize), "updated", common.StorageSize(maxBufferSize))
+		// TODO(jmlee): 이거 dirty를 줄인만큼 clean을 늘려주는게 맞을 것 같은데 geth에 PR 냘려볼까
+		// conf.CleanCacheSize += conf.DirtyCacheSize - maxBufferSize
 		conf.DirtyCacheSize = maxBufferSize
 	}
 	return &conf
@@ -166,6 +169,8 @@ func New(diskdb ethdb.Database, config *Config) *Database {
 	if ancient, err := diskdb.AncientDatadir(); err == nil && ancient != "" && !db.readOnly {
 		freezer, err := rawdb.NewStateFreezer(ancient, false)
 		if err != nil {
+			// TODO(jmlee): 2개 열려면 여기서 문제 생김
+			fmt.Println("log.crit 1 -> err:", err)
 			log.Crit("Failed to open state history freezer", "err", err)
 		}
 		db.freezer = freezer
@@ -216,6 +221,10 @@ func (db *Database) Reader(root common.Hash) (layer, error) {
 	return l, nil
 }
 
+// TODO(jmlee): path-based인 경우 여기가 초반부에 굉장히 느림, 정상인가?
+//
+//	-> ㅇㅇ 원래 path-based가 초반부에 매우 느림, 나중엔 한 500만 블록쯤가면 블록 처리 속도가 hash-based 보다 빨라짐
+//
 // Update adds a new layer into the tree, if that can be linked to an existing
 // old parent. It is disallowed to insert a disk layer (the origin of all). Apart
 // from that this function will flatten the extra diff layers at bottom into disk
@@ -482,4 +491,120 @@ func (db *Database) modifyAllowed() error {
 		return errDatabaseWaitSync
 	}
 	return nil
+}
+
+//
+// for logging node read stat (jmlee)
+//
+
+var (
+	logMutex          sync.Mutex
+	nodeReadPositions = make(map[string]int64)
+	nodeReadSizes     = make(map[string]int64)
+	nodeReadTimes     = make(map[string]int64)
+
+	diffLayerDepthSum int64
+
+	nodeReadStats = make(map[common.Hash]*NodeReadStat)
+)
+
+type NodeReadStat struct {
+	readStartTime time.Time
+
+	isLogged bool
+
+	// owner common.Hash
+	// path  []byte
+	// hash  common.Hash
+
+	// depth       int // diff layer's depth (0 ~ 127)
+	// readPostion string
+	// nodeSize    int64
+}
+
+func ResetCacheStat() (map[string]int64, map[string]int64, map[string]int64, int64) {
+
+	logMutex.Lock()
+
+	// copy stats
+	nums := make(map[string]int64)
+	times := make(map[string]int64)
+	sizes := make(map[string]int64)
+	for key, value := range nodeReadPositions {
+		nums[key] = value
+		times[key] = nodeReadTimes[key]
+		sizes[key] = nodeReadSizes[key]
+	}
+	depthSum := diffLayerDepthSum
+
+	// reset buffers
+	nodeReadPositions = make(map[string]int64)
+	nodeReadTimes = make(map[string]int64)
+	nodeReadSizes = make(map[string]int64)
+	nodeReadStats = make(map[common.Hash]*NodeReadStat)
+	diffLayerDepthSum = 0
+
+	logMutex.Unlock()
+
+	return nums, times, sizes, depthSum
+}
+
+func ResetReadStats() {
+	nodeReadStats = make(map[common.Hash]*NodeReadStat)
+}
+
+func saveReadLogs(hash common.Hash, foundPosition string, foundDepth int64, foundSize int64) {
+	readEndTime := time.Now()
+
+	logMutex.Lock()
+	defer logMutex.Unlock()
+
+	readStat := nodeReadStats[hash]
+	if readStat.isLogged {
+		// this node is already read and logged
+		// this case is possible when snapshot is enabled
+		// (can read the same nodes concurrently due to prefetching)
+		return
+	}
+	// this is first log of this node
+	readStat.isLogged = true
+
+	// collect logs
+	readTime := readEndTime.Sub(readStat.readStartTime)
+	nodeReadPositions[foundPosition] += 1
+	nodeReadTimes[foundPosition] += readTime.Nanoseconds()
+	nodeReadSizes[foundPosition] += foundSize
+	if foundPosition == "diff" {
+		diffLayerDepthSum += foundDepth
+	}
+}
+
+func PrintReadStats() {
+	totalCnt := int64(0)
+	totalTime := int64(0)
+	fmt.Println("print node read stats of GETH")
+
+	logMutex.Lock()
+
+	mapKeys := make([]string, 0)
+	for k, _ := range nodeReadPositions {
+		mapKeys = append(mapKeys, k)
+	}
+	sort.Strings(mapKeys)
+
+	for _, position := range mapKeys {
+		fmt.Println("  at position", position, "-> avg:", nodeReadTimes[position]/nodeReadPositions[position], "ns (cnt:", nodeReadPositions[position], "/ time:", nodeReadTimes[position], ")")
+		totalCnt += nodeReadPositions[position]
+		totalTime += nodeReadTimes[position]
+
+		if position == "diff" {
+			fmt.Println("    => avg depth:", float64(diffLayerDepthSum)/float64(nodeReadPositions[position]), "( sum:", diffLayerDepthSum, "/ cnt:", nodeReadPositions[position])
+		}
+	}
+	if totalCnt > 0 {
+		fmt.Println("    => total -> avg:", totalTime/totalCnt, "ns (cnt:", totalCnt, "/ time:", totalTime, ")")
+		fmt.Println("    => node cache hit rate:", float64(totalCnt-nodeReadPositions["disk"])/float64(totalCnt)*100, "%")
+	}
+
+	logMutex.Unlock()
 }

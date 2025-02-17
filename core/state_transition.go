@@ -75,6 +75,12 @@ func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation b
 	} else {
 		gas = params.TxGas
 	}
+	// measure tx's gas costs in detail (jmlee)
+	if common.IsDoSAttacking {
+		common.CurrentAttackStat.StartingGasCost = gas
+	}
+
+	beforeGas := gas
 	dataLen := uint64(len(data))
 	// Bump the required gas by the amount of transactional data
 	if dataLen > 0 {
@@ -109,10 +115,21 @@ func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation b
 			gas += lenWords * params.InitCodeWordGas
 		}
 	}
+	// measure tx's gas costs in detail (jmlee)
+	if common.IsDoSAttacking {
+		common.CurrentAttackStat.TxDataGasCost = gas - beforeGas
+	}
+
+	beforeGas = gas
 	if accessList != nil {
 		gas += uint64(len(accessList)) * params.TxAccessListAddressGas
 		gas += uint64(accessList.StorageKeys()) * params.TxAccessListStorageKeyGas
 	}
+	// measure tx's gas costs in detail (jmlee)
+	if common.IsDoSAttacking {
+		common.CurrentAttackStat.AccessListGasCost = gas - beforeGas
+	}
+
 	return gas, nil
 }
 
@@ -474,6 +491,9 @@ func (st *StateTransition) refundGas(refundQuotient uint64) uint64 {
 		refund = st.state.GetRefund()
 	}
 	st.gasRemaining += refund
+	if common.IsDoSAttacking {
+		common.CurrentAttackStat.RefundAmount = refund
+	}
 
 	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := uint256.NewInt(st.gasRemaining)
