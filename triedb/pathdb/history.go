@@ -292,6 +292,7 @@ func newHistory(root common.Hash, parent common.Hash, block uint64, states *trie
 	}
 }
 
+// flag
 // encode serializes the state history and returns four byte streams represent
 // concatenated account/storage data, account/storage indexes respectively.
 func (h *history) encode() ([]byte, []byte, []byte, []byte) {
@@ -512,6 +513,7 @@ func readHistory(freezer *rawdb.ResettableFreezer, id uint64) (*history, error) 
 	return &dec, nil
 }
 
+// flag
 // writeHistory persists the state history with the provided state set.
 func writeHistory(freezer *rawdb.ResettableFreezer, dl *diffLayer) error {
 	// Short circuit if state set is not available.

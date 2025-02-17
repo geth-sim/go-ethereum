@@ -269,6 +269,7 @@ var (
 		Usage:    "Scheme to use for storing ethereum state ('hash' or 'path')",
 		Category: flags.StateCategory,
 	}
+	
 	StateHistoryFlag = &cli.Uint64Flag{
 		Name:     "history.state",
 		Usage:    "Number of recent blocks to retain state history for (default = 90,000 blocks, 0 = entire chain)",
@@ -384,6 +385,7 @@ var (
 		Value:    15,
 		Category: flags.PerfCategory,
 	}
+	// flag
 	CacheGCFlag = &cli.IntFlag{
 		Name:     "cache.gc",
 		Usage:    "Percentage of cache memory allowance to use for trie pruning (default = 25% full mode, 0% archive mode)",
@@ -1669,6 +1671,8 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		cfg.TransactionHistory = 0
 		log.Warn("Disabled transaction unindexing for archive node")
 	}
+
+	// flag
 	if ctx.IsSet(CacheFlag.Name) || ctx.IsSet(CacheTrieFlag.Name) {
 		cfg.TrieCleanCache = ctx.Int(CacheFlag.Name) * ctx.Int(CacheTrieFlag.Name) / 100
 	}

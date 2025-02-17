@@ -148,8 +148,10 @@ func hashAlloc(ga *types.GenesisAlloc, isVerkle bool) (common.Hash, error) {
 // states will be persisted into the given database. Also, the genesis state
 // specification will be flushed as well.
 func flushAlloc(ga *types.GenesisAlloc, db ethdb.Database, triedb *triedb.Database, blockhash common.Hash) error {
+	fmt.Println("flushAlloc() executed")
 	statedb, err := state.New(types.EmptyRootHash, state.NewDatabaseWithNodeDB(db, triedb), nil)
 	if err != nil {
+		fmt.Println("  flushAlloc() err1:", err)
 		return err
 	}
 	for addr, account := range *ga {
@@ -163,18 +165,23 @@ func flushAlloc(ga *types.GenesisAlloc, db ethdb.Database, triedb *triedb.Databa
 		}
 	}
 	root, err := statedb.Commit(0, false)
+	fmt.Println("  in flushAlloc() -> root:", root.Hex())
 	if err != nil {
+		// TODO(jmlee): 이미 genesis state를 쓰고난 이후에 다시 쓰려고하면 path-based에선 문제가 생김
+		fmt.Println("  flushAlloc() err2:", err, "/ root:", root.Hex())
 		return err
 	}
 	// Commit newly generated states into disk if it's not empty.
 	if root != types.EmptyRootHash {
 		if err := triedb.Commit(root, true); err != nil {
+			fmt.Println("  flushAlloc() err3:", err)
 			return err
 		}
 	}
 	// Marshal the genesis state specification and persist.
 	blob, err := json.Marshal(ga)
 	if err != nil {
+		fmt.Println("  flushAlloc() err4:", err)
 		return err
 	}
 	rawdb.WriteGenesisStateSpec(db, blockhash, blob)
@@ -245,18 +252,24 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *triedb.Database, g
 	}
 	// Just commit the new block if there is no stored genesis block.
 	stored := rawdb.ReadCanonicalHash(db, 0)
+	fmt.Println("  stored:", stored.Hex())
 	if (stored == common.Hash{}) {
+		fmt.Println("here 1")
 		if genesis == nil {
+			fmt.Println("  here 1-1")
 			log.Info("Writing default main-net genesis block")
 			genesis = DefaultGenesisBlock()
 		} else {
+			fmt.Println("  here 1-2")
 			log.Info("Writing custom genesis block")
 		}
 		applyOverrides(genesis.Config)
 		block, err := genesis.Commit(db, triedb)
 		if err != nil {
+			fmt.Println("  here 1-3 -> err:", err)
 			return genesis.Config, common.Hash{}, err
 		}
+		fmt.Println("  here 1-4")
 		return genesis.Config, block.Hash(), nil
 	}
 	// The genesis block is present(perhaps in ancient database) while the
@@ -265,6 +278,7 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *triedb.Database, g
 	// in this case.
 	header := rawdb.ReadHeader(db, stored, 0)
 	if header.Root != types.EmptyRootHash && !triedb.Initialized(header.Root) {
+		fmt.Println("here 2")
 		if genesis == nil {
 			genesis = DefaultGenesisBlock()
 		}
@@ -282,6 +296,7 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *triedb.Database, g
 	}
 	// Check whether the genesis block is already written.
 	if genesis != nil {
+		fmt.Println("here 3")
 		applyOverrides(genesis.Config)
 		hash := genesis.ToBlock().Hash()
 		if hash != stored {
@@ -296,6 +311,7 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *triedb.Database, g
 	}
 	storedcfg := rawdb.ReadChainConfig(db, stored)
 	if storedcfg == nil {
+		fmt.Println("here 4")
 		log.Warn("Found genesis block without chain config")
 		rawdb.WriteChainConfig(db, stored, newcfg)
 		return newcfg, stored, nil
@@ -464,6 +480,7 @@ func (g *Genesis) Commit(db ethdb.Database, triedb *triedb.Database) (*types.Blo
 	// specification as well as the specification itself into the provided
 	// database.
 	if err := flushAlloc(&g.Alloc, db, triedb, block.Hash()); err != nil {
+		fmt.Println("  flushAlloc() err:", err)
 		return nil, err
 	}
 	rawdb.WriteTd(db, block.Hash(), block.NumberU64(), block.Difficulty())

@@ -491,6 +491,7 @@ func (api *API) StandardTraceBlockToFile(ctx context.Context, hash common.Hash, 
 	return api.standardTraceBlockToFile(ctx, block, config)
 }
 
+// flag
 // IntermediateRoots executes a block (bad- or canon- or side-), and returns a list
 // of intermediate roots: the stateroot after each transaction.
 func (api *API) IntermediateRoots(ctx context.Context, hash common.Hash, config *TraceConfig) ([]common.Hash, error) {

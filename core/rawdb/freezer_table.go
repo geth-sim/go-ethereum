@@ -481,6 +481,7 @@ func (t *freezerTable) sizeHidden() (uint64, error) {
 	return uint64(indices[1].offset), nil
 }
 
+// flag
 // truncateTail discards any recent data before the provided threshold number.
 func (t *freezerTable) truncateTail(items uint64) error {
 	t.lock.Lock()
@@ -488,6 +489,7 @@ func (t *freezerTable) truncateTail(items uint64) error {
 
 	// Ensure the given truncate target falls in the correct range
 	if t.itemHidden.Load() >= items {
+		// fmt.Println("    => Ensure the given truncate target falls in the correct range")
 		return nil
 	}
 	if t.items.Load() < items {
@@ -523,6 +525,9 @@ func (t *freezerTable) truncateTail(items uint64) error {
 	// Hidden items still fall in the current tail file, no data file
 	// can be dropped.
 	if t.tailId == newTailId {
+		// TODO(jmlee): 늘 여기로 오게 되는 듯
+		// fmt.Println("    => Hidden items still fall in the current tail file, no data file can be dropped")
+		// fmt.Println("    => oldSize:", oldSize)
 		return nil
 	}
 	// Hidden items fall in the incorrect range, returns the error.
@@ -587,6 +592,9 @@ func (t *freezerTable) truncateTail(items uint64) error {
 		return err
 	}
 	t.sizeGauge.Dec(int64(oldSize - newSize))
+
+	// fmt.Println("    => decreased table size:", int64(oldSize - newSize))
+
 	return nil
 }
 

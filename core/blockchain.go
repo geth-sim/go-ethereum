@@ -171,7 +171,7 @@ func (c *CacheConfig) triedbConfig() *triedb.Config {
 var defaultCacheConfig = &CacheConfig{
 	TrieCleanLimit: 256,
 	TrieDirtyLimit: 256,
-	TrieTimeLimit:  5 * time.Minute,
+	TrieTimeLimit:  5 * time.Minute, // flag : TrieTimeout
 	SnapshotLimit:  256,
 	SnapshotWait:   true,
 	StateScheme:    rawdb.HashScheme,
@@ -1377,11 +1377,14 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	if err != nil {
 		return err
 	}
+
 	// If node is running in path mode, skip explicit gc operation
 	// which is unnecessary in this mode.
 	if bc.triedb.Scheme() == rawdb.PathScheme {
 		return nil
 	}
+
+	// flag
 	// If we're running an archive node, always flush
 	if bc.cacheConfig.TrieDirtyDisabled {
 		return bc.triedb.Commit(root, false)
@@ -1788,6 +1791,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 			return it.index, err
 		}
 		vtime := time.Since(vstart)
+		// flag
 		proctime := time.Since(start) // processing + validation
 
 		// Update the metrics touched during block processing and validation
@@ -1813,7 +1817,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 		)
 		if !setHead {
 			// Don't set the head, only insert the block
-			err = bc.writeBlockWithState(block, receipts, statedb)
+			err = bc.writeBlockWithState(block, receipts, statedb) //
 		} else {
 			status, err = bc.writeBlockAndSetHead(block, receipts, logs, statedb, false)
 		}

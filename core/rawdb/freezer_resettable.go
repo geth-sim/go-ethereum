@@ -39,6 +39,7 @@ type ResettableFreezer struct {
 	lock    sync.RWMutex
 }
 
+
 // NewResettableFreezer creates a resettable freezer, note freezer is
 // only resettable if the passed file directory is exclusively occupied
 // by the freezer. And also the user-configurable ancient root directory

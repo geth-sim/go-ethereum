@@ -109,6 +109,7 @@ func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint6
 	return nil
 }
 
+// flag
 // cap traverses downwards the diff tree until the number of allowed diff layers
 // are crossed. All diffs beyond the permitted number are flattened downwards.
 func (tree *layerTree) cap(root common.Hash, layers int) error {

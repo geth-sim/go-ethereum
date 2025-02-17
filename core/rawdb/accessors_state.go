@@ -160,6 +160,7 @@ func DeleteTrieJournal(db ethdb.KeyValueWriter) {
 	}
 }
 
+// flag
 // ReadStateHistoryMeta retrieves the metadata corresponding to the specified
 // state history. Compute the position of state history in freezer by minus
 // one since the id of first state history starts from one(zero for initial
@@ -251,6 +252,7 @@ func ReadStateHistory(db ethdb.AncientReaderOp, id uint64) ([]byte, []byte, []by
 	return meta, accountIndex, storageIndex, accountData, storageData, nil
 }
 
+// flag
 // WriteStateHistory writes the provided state history to database. Compute the
 // position of state history in freezer by minus one since the id of first state
 // history starts from one(zero for initial state).

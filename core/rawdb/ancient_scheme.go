@@ -66,6 +66,7 @@ var stateFreezerNoSnappy = map[string]bool{
 	stateHistoryStorageData:  false,
 }
 
+// flag
 // The list of identifiers of ancient stores.
 var (
 	ChainFreezerName = "chain" // the folder name of chain segment ancient store.

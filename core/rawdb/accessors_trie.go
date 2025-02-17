@@ -101,6 +101,7 @@ func ExistsAccountTrieNode(db ethdb.KeyValueReader, path []byte) bool {
 
 // WriteAccountTrieNode writes the provided account trie node into database.
 func WriteAccountTrieNode(db ethdb.KeyValueWriter, path []byte, node []byte) {
+	// fmt.Println("rawdb.WriteAccountTrieNode() -> key:", accountTrieNodeKey(path))
 	if err := db.Put(accountTrieNodeKey(path), node); err != nil {
 		log.Crit("Failed to store account trie node", "err", err)
 	}
@@ -149,6 +150,7 @@ func ExistsStorageTrieNode(db ethdb.KeyValueReader, accountHash common.Hash, pat
 
 // WriteStorageTrieNode writes the provided storage trie node into database.
 func WriteStorageTrieNode(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte, node []byte) {
+	// fmt.Println("rawdb.WriteStorageTrieNode() -> key:", storageTrieNodeKey(accountHash, path))
 	if err := db.Put(storageTrieNodeKey(accountHash, path), node); err != nil {
 		log.Crit("Failed to store storage trie node", "err", err)
 	}
@@ -179,6 +181,7 @@ func HasLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) bool {
 
 // WriteLegacyTrieNode writes the provided legacy trie node to database.
 func WriteLegacyTrieNode(db ethdb.KeyValueWriter, hash common.Hash, node []byte) {
+	// fmt.Println("WriteLegacyTrieNode() -> nodehash:", hash.Hex())
 	if err := db.Put(hash.Bytes(), node); err != nil {
 		log.Crit("Failed to store legacy trie node", "err", err)
 	}
@@ -247,6 +250,7 @@ func ReadTrieNode(db ethdb.KeyValueReader, owner common.Hash, path []byte, hash 
 //   - owner
 //   - path
 func WriteTrieNode(db ethdb.KeyValueWriter, owner common.Hash, path []byte, hash common.Hash, node []byte, scheme string) {
+	fmt.Println("rawdb.WriteTrieNode() executed")
 	switch scheme {
 	case HashScheme:
 		WriteLegacyTrieNode(db, hash, node)

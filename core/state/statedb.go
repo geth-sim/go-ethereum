@@ -1195,6 +1195,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 	// Handle all state deletions first
 	incomplete, err := s.handleDestruction(nodes)
 	if err != nil {
+		fmt.Println("statedb.Commit() err 1")
 		return common.Hash{}, err
 	}
 	// Handle all state updates afterwards
@@ -1211,6 +1212,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		// Write any storage changes in the state object to its storage trie
 		set, err := obj.commit()
 		if err != nil {
+			fmt.Println("statedb.Commit() err 2")
 			return common.Hash{}, err
 		}
 		// Merge the dirty nodes of storage trie into global set. It is possible
@@ -1218,6 +1220,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		// In this case, the node set is shared by both accounts.
 		if set != nil {
 			if err := nodes.Merge(set); err != nil {
+				fmt.Println("statedb.Commit() err 3")
 				return common.Hash{}, err
 			}
 			updates, deleted := set.Size()
@@ -1237,11 +1240,13 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 	}
 	root, set, err := s.trie.Commit(true)
 	if err != nil {
+		fmt.Println("statedb.Commit() err 4")
 		return common.Hash{}, err
 	}
 	// Merge the dirty nodes of account trie into global set
 	if set != nil {
 		if err := nodes.Merge(set); err != nil {
+			fmt.Println("statedb.Commit() err 5")
 			return common.Hash{}, err
 		}
 		accountTrieNodesUpdated, accountTrieNodesDeleted = set.Size()

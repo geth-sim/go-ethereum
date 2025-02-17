@@ -303,6 +303,7 @@ func (f *Freezer) TruncateHead(items uint64) (uint64, error) {
 
 // TruncateTail discards any recent data below the provided threshold number.
 func (f *Freezer) TruncateTail(tail uint64) (uint64, error) {
+	// fmt.Println("Freezer.TruncateTail() executed")
 	if f.readonly {
 		return 0, errReadOnly
 	}
@@ -314,7 +315,9 @@ func (f *Freezer) TruncateTail(tail uint64) (uint64, error) {
 		return old, nil
 	}
 	for _, table := range f.tables {
+		// fmt.Println("  -> table[", tableName, "].truncateTail() executed")
 		if err := table.truncateTail(tail); err != nil {
+			// fmt.Println("    => err is not nil:", err)
 			return 0, err
 		}
 	}

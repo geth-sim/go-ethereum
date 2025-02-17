@@ -149,6 +149,7 @@ func New(diskdb ethdb.Database, config *Config) *Database {
 		config = Defaults
 	}
 	config = config.sanitize()
+	fmt.Println("@@ pathdb.bufferSize size:", config.DirtyCacheSize/1024/1024, "MB")
 
 	db := &Database{
 		readOnly:   config.ReadOnly,
@@ -181,11 +182,13 @@ func New(diskdb ethdb.Database, config *Config) *Database {
 			// not initialized yet, as these state histories are not expected.
 			frozen, err := db.freezer.Ancients()
 			if err != nil {
+				fmt.Println("log.crit 2")
 				log.Crit("Failed to retrieve head of state history", "err", err)
 			}
 			if frozen != 0 {
 				err := db.freezer.Reset()
 				if err != nil {
+					fmt.Println("log.crit 3")
 					log.Crit("Failed to reset state histories", "err", err)
 				}
 				log.Info("Truncated extraneous state history")
@@ -195,6 +198,7 @@ func New(diskdb ethdb.Database, config *Config) *Database {
 			// it's not aligned with the disk layer.
 			pruned, err := truncateFromHead(db.diskdb, freezer, diskLayerID)
 			if err != nil {
+				fmt.Println("log.crit 4")
 				log.Crit("Failed to truncate extra state histories", "err", err)
 			}
 			if pruned != 0 {
@@ -205,6 +209,7 @@ func New(diskdb ethdb.Database, config *Config) *Database {
 	// Disable database in case node is still in the initial state sync stage.
 	if rawdb.ReadSnapSyncStatusFlag(diskdb) == rawdb.StateSyncRunning && !db.readOnly {
 		if err := db.Disable(); err != nil {
+			fmt.Println("log.crit 5")
 			log.Crit("Failed to disable database", "err", err) // impossible to happen
 		}
 	}
