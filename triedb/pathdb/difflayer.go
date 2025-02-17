@@ -19,6 +19,7 @@ package pathdb
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -95,6 +96,8 @@ func (dl *diffLayer) parentLayer() layer {
 	return dl.parent
 }
 
+// flag
+// TODO(jmlee): measure path-based state's read stat
 // node retrieves the node with provided node information. It's the internal
 // version of Node function with additional accessed layer tracked. No error
 // will be returned if node is not found.
@@ -104,6 +107,18 @@ func (dl *diffLayer) node(owner common.Hash, path []byte, hash common.Hash, dept
 	dl.lock.RLock()
 	defer dl.lock.RUnlock()
 
+	foundPosition := ""
+	foundDepth := int64(0)
+	foundSize := int64(0)
+	isFound := false
+	if common.LoggingReadStats {
+		defer func() {
+			if isFound {
+				saveReadLogs(hash, foundPosition, foundDepth, foundSize)
+			}
+		}()
+	}
+
 	// If the trie node is known locally, return it
 	subset, ok := dl.nodes[owner]
 	if ok {
@@ -111,17 +126,25 @@ func (dl *diffLayer) node(owner common.Hash, path []byte, hash common.Hash, dept
 		if ok {
 			// If the trie node is not hash matched, or marked as removed,
 			// bubble up an error here. It shouldn't happen at all.
+			foundDepth = int64(depth)
 			if n.Hash != hash {
 				dirtyFalseMeter.Mark(1)
 				log.Error("Unexpected trie node in diff layer", "owner", owner, "path", path, "expect", hash, "got", n.Hash)
+				isFound = true
+				foundPosition = "notFound"
+				foundSize = 0
 				return nil, newUnexpectedNodeError("diff", hash, n.Hash, owner, path, n.Blob)
 			}
 			dirtyHitMeter.Mark(1)
 			dirtyNodeHitDepthHist.Update(int64(depth))
 			dirtyReadMeter.Mark(int64(len(n.Blob)))
+			isFound = true
+			foundPosition = "diff"
+			foundSize = int64(len(n.Blob))
 			return n.Blob, nil
 		}
 	}
+
 	// Trie node unknown to this layer, resolve from parent
 	if diff, ok := dl.parent.(*diffLayer); ok {
 		return diff.node(owner, path, hash, depth+1)
@@ -130,9 +153,20 @@ func (dl *diffLayer) node(owner common.Hash, path []byte, hash common.Hash, dept
 	return dl.parent.Node(owner, path, hash)
 }
 
+// flag
 // Node implements the layer interface, retrieving the trie node blob with the
 // provided node information. No error will be returned if the node is not found.
 func (dl *diffLayer) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte, error) {
+	if common.LoggingReadStats {
+		logMutex.Lock()
+		if _, exist := nodeReadStats[hash]; !exist {
+			readStat := new(NodeReadStat)
+			readStat.readStartTime = time.Now()
+			nodeReadStats[hash] = readStat
+		}
+		logMutex.Unlock()
+	}
+
 	return dl.node(owner, path, hash, 0)
 }
 
@@ -142,6 +176,7 @@ func (dl *diffLayer) update(root common.Hash, id uint64, block uint64, nodes map
 	return newDiffLayer(dl, root, id, block, nodes, states)
 }
 
+// flag
 // persist flushes the diff layer and all its parent layers to disk layer.
 func (dl *diffLayer) persist(force bool) (layer, error) {
 	if parent, ok := dl.parentLayer().(*diffLayer); ok {
@@ -163,6 +198,7 @@ func (dl *diffLayer) persist(force bool) (layer, error) {
 	return diffToDisk(dl, force)
 }
 
+// flag
 // diffToDisk merges a bottom-most diff into the persistent disk layer underneath
 // it. The method will panic if called onto a non-bottom-most diff layer.
 func diffToDisk(layer *diffLayer, force bool) (layer, error) {

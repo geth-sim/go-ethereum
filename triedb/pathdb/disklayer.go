@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
@@ -50,6 +51,7 @@ func newDiskLayer(root common.Hash, id uint64, db *Database, cleans *fastcache.C
 	if cleans == nil && db.config.CleanCacheSize != 0 {
 		cleans = fastcache.New(db.config.CleanCacheSize)
 	}
+	// fmt.Println("@@ disklayer.clean size:", db.config.CleanCacheSize/1024/1024, "MB")
 	return &diskLayer{
 		root:   root,
 		id:     id,
@@ -95,11 +97,29 @@ func (dl *diskLayer) markStale() {
 	dl.stale = true
 }
 
+// flag
+// TODO(jmlee): measure path-based state's read stat
 // Node implements the layer interface, retrieving the trie node with the
 // provided node info. No error will be returned if the node is not found.
 func (dl *diskLayer) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte, error) {
 	dl.lock.RLock()
 	defer dl.lock.RUnlock()
+
+	foundPosition := "notFound"
+	foundDepth := int64(0)
+	foundSize := int64(0)
+	if common.LoggingReadStats {
+		logMutex.Lock()
+		if _, exist := nodeReadStats[hash]; !exist {
+			readStat := new(NodeReadStat)
+			readStat.readStartTime = time.Now()
+			nodeReadStats[hash] = readStat
+		}
+		logMutex.Unlock()
+		defer func() {
+			saveReadLogs(hash, foundPosition, foundDepth, foundSize)
+		}()
+	}
 
 	if dl.stale {
 		return nil, errSnapshotStale
@@ -115,6 +135,8 @@ func (dl *diskLayer) Node(owner common.Hash, path []byte, hash common.Hash) ([]b
 	if n != nil {
 		dirtyHitMeter.Mark(1)
 		dirtyReadMeter.Mark(int64(len(n.Blob)))
+		foundPosition = "dirty"
+		foundSize = int64(len(n.Blob))
 		return n.Blob, nil
 	}
 	dirtyMissMeter.Mark(1)
@@ -130,6 +152,8 @@ func (dl *diskLayer) Node(owner common.Hash, path []byte, hash common.Hash) ([]b
 			if got == hash {
 				cleanHitMeter.Mark(1)
 				cleanReadMeter.Mark(int64(len(blob)))
+				foundPosition = "clean"
+				foundSize = int64(len(blob))
 				return blob, nil
 			}
 			cleanFalseMeter.Mark(1)
@@ -156,6 +180,8 @@ func (dl *diskLayer) Node(owner common.Hash, path []byte, hash common.Hash) ([]b
 		dl.cleans.Set(key, nBlob)
 		cleanWriteMeter.Mark(int64(len(nBlob)))
 	}
+	foundPosition = "disk"
+	foundSize = int64(len(nBlob))
 	return nBlob, nil
 }
 
@@ -165,6 +191,7 @@ func (dl *diskLayer) update(root common.Hash, id uint64, block uint64, nodes map
 	return newDiffLayer(dl, root, id, block, nodes, states)
 }
 
+// flag
 // commit merges the given bottom-most diff layer into the node buffer
 // and returns a newly constructed disk layer. Note the current disk
 // layer must be tagged as stale first to prevent re-access.
@@ -190,6 +217,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		limit := dl.db.config.StateHistory
 		if limit != 0 && bottom.stateID()-tail > limit {
 			overflow = true
@@ -219,6 +247,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	if !force && rawdb.ReadPersistentStateID(dl.db.diskdb) < oldest {
 		force = true
 	}
+	// flag
 	if err := ndl.buffer.flush(ndl.db.diskdb, ndl.cleans, ndl.id, force); err != nil {
 		return nil, err
 	}
@@ -230,6 +259,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 			return nil, err
 		}
 		log.Debug("Pruned state history", "items", pruned, "tailid", oldest)
+		// fmt.Println("Pruned state history", "items", pruned, "tailid", oldest)
 	}
 	return ndl, nil
 }
