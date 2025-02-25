@@ -659,7 +659,13 @@ func (t *Trie) hashRoot() (node, node) {
 		returnHasherToPool(h)
 		t.unhashed = 0
 	}()
-	hashed, cached := h.hash(t.root, true)
+
+	// original
+	// hashed, cached := h.hash(t.root, true)
+	// new to modify nodeHash as I want (jmlee)
+	var tnd common.TrieNodeData
+	hashed, cached := h.hash(t.root, true, tnd)
+	
 	return hashed, cached
 }
 

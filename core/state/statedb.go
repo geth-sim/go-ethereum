@@ -1199,6 +1199,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		return common.Hash{}, err
 	}
 	// Handle all state updates afterwards
+	common.HashingStorageTrie = true
 	for addr := range s.stateObjectsDirty {
 		obj := s.stateObjects[addr]
 		if obj.deleted {
@@ -1228,6 +1229,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 			storageTrieNodesDeleted += deleted
 		}
 	}
+	common.HashingStorageTrie = false
 	if codeWriter.ValueSize() > 0 {
 		if err := codeWriter.Write(); err != nil {
 			log.Crit("Failed to commit dirty codes", "error", err)
@@ -1238,7 +1240,9 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 	if metrics.EnabledExpensive {
 		start = time.Now()
 	}
+	common.HashingStateTrie = true
 	root, set, err := s.trie.Commit(true)
+	common.HashingStateTrie = false
 	if err != nil {
 		fmt.Println("statedb.Commit() err 4")
 		return common.Hash{}, err

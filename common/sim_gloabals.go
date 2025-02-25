@@ -39,11 +39,36 @@ var (
 	// enable snapshot or not
 	EnableSnapshot = false
 
-	// prefixing trie node's hash value with block number
-	EnableNodePrefixing = false
+
+
+	//
+	// modify nodeHash options
+	//
+	// prefixing trie node's hash value
+	EnableNodePrefixing = false // TODO(jmlee): maybe can deprecate this
 	// actually, this may be prefix bytes (ex. PrefixLength = 4 -> prefixes 8 characters)
-	PrefixLength     = 0
-	GenesisStateRoot Hash // TODO(jmlee): temp var, implement this correctly
+	PrefixLength     = 0    // TODO(jmlee): deprecate this, replaced with VersionLength
+
+	// length for each prefixes, sum of lengths must be <= 64 (= hash's hex string length)
+	VersionLength    = 0    // (recommanded: 8)
+
+	PathLength       = 0   // 
+	FixedPathLength = false // option: path length is fixed or not	
+	PathPaddingAtEnd = true // option: 0-padding position for path -> end or front (should be true following PrefixTree)
+	
+	AppendPathFirst  = false // option: 
+	
+	LastPaddingBound = 56 // padding prefix until len(prefix) = LastPaddingBound (max: 64, to disable: 0)
+	
+	MaxPathLen = 0 // to measure max path len
+	MaxPathLenBlockNum = uint64(0) // to measure when the path len is max
+	HashingStateTrie = false // flag: now hashing state trie
+	HashingStorageTrie = false // flag: now hashing storage tries
+	// CAUTION: maybe need to remote disk before re-run simulator when modifying nodeHash
+
+
+
+	GenesisStateRoot Hash   // TODO(jmlee): temp var, implement this correctly
 
 	// opcode stats (opcode execution num/time/cost)
 	LoggingOpcodeStats = false
@@ -340,4 +365,19 @@ func SaveOpcodeLogs(filePath string) {
 		return
 	}
 	fmt.Println("  saved file name:", fileName)
+}
+
+// metadata to modify nodeHash (jmlee)
+type TrieNodeData struct {
+	NodeHash Hash
+
+	Path []byte
+
+	AddrHash Hash
+
+	Depth int64
+
+	NodeType string
+
+	EncodedNode []byte
 }

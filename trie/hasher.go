@@ -18,6 +18,10 @@ package trie
 
 import (
 	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -67,7 +71,7 @@ func returnHasherToPool(h *hasher) {
 
 // hash collapses a node down into a hash node, also returning a copy of the
 // original node initialized with the computed hash to replace the original one.
-func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
+func (h *hasher) hash(n node, force bool, tnd common.TrieNodeData) (hashed node, cached node) {
 	// Return the cached hash if it's available
 	if hash, _ := n.cache(); hash != nil {
 		return hash, n
@@ -75,15 +79,15 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 	// Trie not processed yet, walk the children
 	switch n := n.(type) {
 	case *shortNode:
-		collapsed, cached := h.hashShortNodeChildren(n)
+		collapsed, cached := h.hashShortNodeChildren(n, tnd)
 		hashed := h.shortnodeToHash(collapsed, force)
 		// We need to retain the possibly _not_ hashed node, in case it was too
 		// small to be hashed
 		if hn, ok := hashed.(hashNode); ok {
 			cached.flags.hash = hn
 
-			if common.EnableNodePrefixing {
-				modifiedHash := modifyHash(n, hn, CurrentBlockNum)
+			if common.PathLength+common.VersionLength > 0 {
+				modifiedHash := modifyHashV4(n, hn, CurrentBlockNum, tnd)
 				cached.flags.hash = modifiedHash
 				hashed = modifiedHash
 			}
@@ -93,13 +97,13 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 		}
 		return hashed, cached
 	case *fullNode:
-		collapsed, cached := h.hashFullNodeChildren(n)
+		collapsed, cached := h.hashFullNodeChildren(n, tnd)
 		hashed = h.fullnodeToHash(collapsed, force)
 		if hn, ok := hashed.(hashNode); ok {
 			cached.flags.hash = hn
 
-			if common.EnableNodePrefixing {
-				modifiedHash := modifyHash(n, hn, CurrentBlockNum)
+			if common.PathLength+common.VersionLength > 0 {
+				modifiedHash := modifyHashV4(n, hn, CurrentBlockNum, tnd)
 				cached.flags.hash = modifiedHash
 				hashed = modifiedHash
 			}
@@ -131,9 +135,98 @@ func modifyHash(n node, hash hashNode, blockNum uint64) hashNode {
 	}
 }
 
+// (jmlee) modify nodeHash as I want
+func modifyHashV4(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeData) hashNode {
+	fmt.Println("in modifyHashV5()")
+	// fmt.Println("  original path:", tnd.Path)
+	// fmt.Println("  version:", blockNum)
+	// fmt.Println("  original hash:", hash)
+	// fmt.Println("  HashingStateTrie:", common.HashingStateTrie)
+	// fmt.Println("  HashingStorageTrie:", common.HashingStorageTrie)
+	if common.HashingStateTrie && common.HashingStorageTrie {
+		fmt.Println("ERROR: HashingStateTrie and HashingStorageTrie could not be both true")
+		os.Exit(1)
+	}
+	if common.MaxPathLen < len(tnd.Path) {
+		common.MaxPathLen = len(tnd.Path)
+		common.MaxPathLenBlockNum = blockNum
+	}
+	// fmt.Println("  max path len:", common.MaxPathLen)
+	// fmt.Println("  max path len at block:", common.MaxPathLenBlockNum)
+
+	switch n.(type) {
+	case *shortNode, *fullNode:
+		//
+		// Convert path to fixed-length hex string (each byte -> single hex digit)
+		//
+
+		// Adjust path length to match PathLength (Trim or Pad)
+		path := tnd.Path
+		if len(path) > common.PathLength {
+			path = path[:common.PathLength] // Keep leftmost PathLength elements
+			// fmt.Println("  path trimmed to:", path)
+		} else if len(path) < common.PathLength && common.FixedPathLength {
+			missing := common.PathLength - len(path)
+			padding := make([]byte, missing)
+			if common.PathPaddingAtEnd {
+				path = append(path, padding...) // Append padding at the end
+			} else {
+				path = append(padding, path...) // Prepend padding at the front
+			}
+			// fmt.Println("  path padded to:", path)
+		}
+
+		// Convert path bytes (0~15) to hex string using lookup table
+		var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"}
+		pathHex := ""
+		for _, b := range path {
+			pathHex += indices[b] // Faster than fmt.Sprintf or Builder
+		}
+		// fmt.Println("  path prefix:", pathHex)
+
+		//
+		// Convert blockNum to fixed-length hex string
+		//
+		blockHex := fmt.Sprintf("%0*x", common.VersionLength, blockNum)
+		// fmt.Println("  block prefix:", blockHex)
+
+		//
+		// Merge pathHex and blockHex into a single string
+		//
+		var prefixStr string
+		if common.AppendPathFirst {
+			prefixStr = pathHex + blockHex
+		} else {
+			prefixStr = blockHex + pathHex
+		}
+		if len(prefixStr) < common.LastPaddingBound {
+			prefixStr += strings.Repeat("0", common.LastPaddingBound-len(prefixStr))
+		}
+		// fmt.Println("  prefix str:", prefixStr)
+
+		//
+		// Overwrite the front part of newHashHex with prefixStr
+		//
+		newHashHex := prefixStr + hex.EncodeToString(hash)[len(prefixStr):]
+		// fmt.Println("  modified hex hash:", newHashHex)
+
+		// Convert the modified hex string back to bytes efficiently
+		newHash, err := hex.DecodeString(newHashHex)
+		if err != nil {
+			fmt.Println("  hex.Decode error:", err)
+			return nil
+		}
+
+		// fmt.Println("  modified hash (bytes):", newHash, "\n")
+		return newHash
+	default:
+		return nil
+	}
+}
+
 // hashShortNodeChildren collapses the short node. The returned collapsed node
 // holds a live reference to the Key, and must not be modified.
-func (h *hasher) hashShortNodeChildren(n *shortNode) (collapsed, cached *shortNode) {
+func (h *hasher) hashShortNodeChildren(n *shortNode, tnd common.TrieNodeData) (collapsed, cached *shortNode) {
 	// Hash the short node's child, caching the newly hashed subtree
 	collapsed, cached = n.copy(), n.copy()
 	// Previously, we did copy this one. We don't seem to need to actually
@@ -143,12 +236,15 @@ func (h *hasher) hashShortNodeChildren(n *shortNode) (collapsed, cached *shortNo
 	// Unless the child is a valuenode or hashnode, hash it
 	switch n.Val.(type) {
 	case *fullNode, *shortNode:
-		collapsed.Val, cached.Val = h.hash(n.Val, false)
+		var childTnd common.TrieNodeData
+		childTnd.Path = append(tnd.Path, n.Key...)
+		childTnd.Depth = tnd.Depth + 1
+		collapsed.Val, cached.Val = h.hash(n.Val, false, childTnd)
 	}
 	return collapsed, cached
 }
 
-func (h *hasher) hashFullNodeChildren(n *fullNode) (collapsed *fullNode, cached *fullNode) {
+func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (collapsed *fullNode, cached *fullNode) {
 	// Hash the full node's children, caching the newly hashed subtrees
 	cached = n.copy()
 	collapsed = n.copy()
@@ -159,7 +255,10 @@ func (h *hasher) hashFullNodeChildren(n *fullNode) (collapsed *fullNode, cached 
 			go func(i int) {
 				hasher := newHasher(false)
 				if child := n.Children[i]; child != nil {
-					collapsed.Children[i], cached.Children[i] = hasher.hash(child, false)
+					var childTnd common.TrieNodeData
+					childTnd.Path = append(tnd.Path, byte(i))
+					childTnd.Depth = tnd.Depth + 1
+					collapsed.Children[i], cached.Children[i] = hasher.hash(child, false, childTnd)
 				} else {
 					collapsed.Children[i] = nilValueNode
 				}
@@ -171,7 +270,10 @@ func (h *hasher) hashFullNodeChildren(n *fullNode) (collapsed *fullNode, cached 
 	} else {
 		for i := 0; i < 16; i++ {
 			if child := n.Children[i]; child != nil {
-				collapsed.Children[i], cached.Children[i] = h.hash(child, false)
+				var childTnd common.TrieNodeData
+				childTnd.Path = append(tnd.Path, byte(i))
+				childTnd.Depth = tnd.Depth + 1
+				collapsed.Children[i], cached.Children[i] = h.hash(child, false, childTnd)
 			} else {
 				collapsed.Children[i] = nilValueNode
 			}
@@ -231,6 +333,9 @@ func (h *hasher) hashData(data []byte) hashNode {
 	return n
 }
 
+// TODO(jmlee): This function will not work correctly if the nodeHash has been modified with.
+// Keep this in mind and either avoid using this function or take appropriate measures.
+//
 // proofHash is used to construct trie proofs, and returns the 'collapsed'
 // node (for later RLP encoding) as well as the hashed node -- unless the
 // node is smaller than 32 bytes, in which case it will be returned as is.
@@ -238,10 +343,12 @@ func (h *hasher) hashData(data []byte) hashNode {
 func (h *hasher) proofHash(original node) (collapsed, hashed node) {
 	switch n := original.(type) {
 	case *shortNode:
-		sn, _ := h.hashShortNodeChildren(n)
+		var tnd common.TrieNodeData
+		sn, _ := h.hashShortNodeChildren(n, tnd)
 		return sn, h.shortnodeToHash(sn, false)
 	case *fullNode:
-		fn, _ := h.hashFullNodeChildren(n)
+		var tnd common.TrieNodeData
+		fn, _ := h.hashFullNodeChildren(n, tnd)
 		return fn, h.fullnodeToHash(fn, false)
 	default:
 		// Value and hash nodes don't have children, so they're left as were
