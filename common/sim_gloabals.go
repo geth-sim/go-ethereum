@@ -46,7 +46,7 @@ var (
 	GenesisStateRoot Hash // TODO(jmlee): temp var, implement this correctly
 
 	// opcode stats (opcode execution num/time/cost)
-	LoggingOpcodeStats = true
+	LoggingOpcodeStats = false
 	OpcodeStats        = make(map[string]*OpcodeStat)
 	CurrentOpcodeStat  = NewOpcodeStat()
 
@@ -54,7 +54,7 @@ var (
 	// this logging have less impact on performance,
 	// but might be incorrect when snapshot is enabled (due to concurrent trie node prefetching)
 	// additionally, may have impact on "DiskCommits" time (need to check this)
-	LoggingReadStats = true
+	LoggingReadStats = false
 
 	// flag for DoS attack
 	IsDoSAttacking    = false

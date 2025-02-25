@@ -33,7 +33,7 @@ var (
 	// choose leveldb vs memorydb
 	useLeveldb = true
 	// leveldb path ($ sudo chmod -R 777 /ethereum)
-	leveldbPathPrefix = "/ethereum/evm_simulator_jmlee/port_"
+	leveldbPathPrefix = "/ethereum/state_simulator_jmlee/port_"
 	leveldbPath       = leveldbPathPrefix + ServerPort
 	// leveldb cache size (MB) (archive mode: 2048, full mode: 2048, min: 16) (memory leak might occur when calling reset() frequently with too big cache size)
 	leveldbCache int

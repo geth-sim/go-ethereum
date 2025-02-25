@@ -206,7 +206,7 @@ func connHandler(conn net.Conn) {
 
 			case "insertTransactionArgs":
 				// get params
-				fmt.Println("execute insertTransactionArgs()")
+				// fmt.Println("execute insertTransactionArgs()")
 
 				// receive large msg
 				if params[len(params)-1] != "@" {
