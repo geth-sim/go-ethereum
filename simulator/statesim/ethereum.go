@@ -142,6 +142,243 @@ func setDatabase(deleteDisk bool) {
 	}
 
 	//
+	// set modifyHash options
+	//
+	if common.ModifyHashMethod == "" {
+		// do nothing
+
+	} else if common.ModifyHashMethod == "JMT" {
+
+		//
+		// v1 -> state/storage key: version 8 + path 54 + path len 2
+		// infeasible design: key collision occurs between state trie node and storage trie node that have the same path
+		//
+
+		//
+		// v2 -> state/storage key: version 8 + path 48 + nodeHash 8
+		//
+
+		// version
+		common.VersionLength = 8
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 48
+		common.FixedPathLength = true
+		common.PathPaddingAtEnd = true
+		common.AppendPathFirst = false
+		common.AppendPathLen = false
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 56
+
+		// section byte
+		common.AppendTrieType = false
+
+		// CA's addrHash
+		common.AppendContractAddrHash = false
+		common.AddrHashPrefixLen = 0
+
+	} else if common.ModifyHashMethod == "JMT_fixed" {
+
+		// TODO(jmlee): is this optimal for JMT?
+
+		// state key: version 8 + section 1 + path 53 + path len 2
+		// storage key: version 8 + section 1 + addrHash 24 + path 29 + path len 2
+
+		// version
+		common.VersionLength = 8
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 29
+		common.FixedPathLength = true
+		common.PathPaddingAtEnd = true
+		common.AppendPathFirst = false
+		common.AppendPathLen = true
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 62
+
+		// section byte
+		common.AppendTrieType = true
+
+		// CA's addrHash
+		common.AppendContractAddrHash = true
+		common.AddrHashPrefixLen = 24
+
+	} else if common.ModifyHashMethod == "PrefixTree" {
+
+		// state/storage key: path 48 + version 8 + nodeHash 8
+
+		// version
+		common.VersionLength = 8
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 48
+		common.FixedPathLength = true
+		common.PathPaddingAtEnd = true
+		common.AppendPathFirst = true
+		common.AppendPathLen = false
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 56
+
+		// section byte
+		common.AppendTrieType = false
+
+		// CA's addrHash
+		common.AppendContractAddrHash = false
+		common.AddrHashPrefixLen = 0
+
+	} else if common.ModifyHashMethod == "PrefixTree_fixed" {
+
+		// TODO(jmlee): is this optimal for PrefixTree?
+
+		// state key: section 1 + path 53 + version 8 + path len 2
+		// storage key: section 1 + addrHash 24 + path 29 + version 8 + path len 2
+
+		// version
+		common.VersionLength = 8
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 53
+		common.FixedPathLength = true
+		common.PathPaddingAtEnd = true
+		common.AppendPathFirst = true
+		common.AppendPathLen = true
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 0
+
+		// section byte
+		common.AppendTrieType = true
+
+		// CA's addrHash
+		common.AppendContractAddrHash = true
+		common.AddrHashPrefixLen = 24
+
+	} else if common.ModifyHashMethod == "HalfPath" {
+
+		// state key: section 1 + path 24 + nodeHash 37 + path len 2
+		// storage key: section 1 + addrHash 24 + path 24 + nodeHash 13 + path len 2
+
+		// version
+		common.VersionLength = 0
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 24
+		common.FixedPathLength = true
+		common.PathPaddingAtEnd = true
+		common.AppendPathFirst = true
+		common.AppendPathLen = true
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 0
+
+		// section byte
+		common.AppendTrieType = true
+
+		// CA's addrHash
+		common.AppendContractAddrHash = true
+		common.AddrHashPrefixLen = 24
+
+	} else if common.ModifyHashMethod == "PBSS" {
+
+		// TODO(jmlee): Geth does not work properly in situations where nodes with the same node hash are created in several blocks
+		// just activate common.IsPathScheme option or find other proper ways
+
+		// state key: section 1 + path 24 + 0-padding 37 + path len 2
+		// storage key: section 1 + addrHash 24 + path 24 + 0-padding 13 + path len 2
+
+		// version
+		common.VersionLength = 0
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 24
+		common.FixedPathLength = true
+		common.PathPaddingAtEnd = true
+		common.AppendPathFirst = true
+		common.AppendPathLen = true
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 62
+
+		// section byte
+		common.AppendTrieType = true
+
+		// CA's addrHash
+		common.AppendContractAddrHash = true
+		common.AddrHashPrefixLen = 24
+
+	} else if common.ModifyHashMethod == "TH" {
+
+		// state/storage key: version 8 + nodeHash 56
+
+		// version
+		common.VersionLength = 8
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 0
+		common.FixedPathLength = false
+		common.PathPaddingAtEnd = false
+		common.AppendPathFirst = false
+		common.AppendPathLen = false
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 0
+
+		// section byte
+		common.AppendTrieType = false
+
+		// CA's addrHash
+		common.AppendContractAddrHash = false
+		common.AddrHashPrefixLen = 0
+
+	} else if common.ModifyHashMethod == "none" {
+
+		// original hash-based Ethereum
+
+		// version
+		common.VersionLength = 0
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 0
+		common.FixedPathLength = true
+		common.PathPaddingAtEnd = true
+		common.AppendPathFirst = true
+		common.AppendPathLen = false
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 0
+
+		// section byte
+		common.AppendTrieType = false
+
+		// CA's addrHash
+		common.AppendContractAddrHash = false
+		common.AddrHashPrefixLen = 0
+
+	} else {
+		fmt.Println("ERROR: unknown ModifyHashMethod:", common.ModifyHashMethod)
+		os.Exit(1)
+	}
+
+	//
 	// set diskdb (TODO(jmlee): enable pebbleDB)
 	//
 

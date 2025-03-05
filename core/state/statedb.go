@@ -19,6 +19,7 @@ package state
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -940,7 +941,10 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountHashes += time.Since(start) }(time.Now())
 	}
-	return s.trie.Hash()
+	common.HashingStateTrie = true
+	root := s.trie.Hash()
+	common.HashingStateTrie = false
+	return root
 }
 
 // SetTxContext sets the current transaction hash and index which are
@@ -1211,6 +1215,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 			obj.dirtyCode = false
 		}
 		// Write any storage changes in the state object to its storage trie
+		common.AddrHashOfCurrentStorageTrie = obj.addrHash
 		set, err := obj.commit()
 		if err != nil {
 			fmt.Println("statedb.Commit() err 2")
@@ -1291,6 +1296,8 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		s.snap = nil
 	}
 	if root == (common.Hash{}) {
+		fmt.Println("ERROR: avoid void root")
+		os.Exit(1)
 		root = types.EmptyRootHash
 	}
 	origin := s.originalRoot

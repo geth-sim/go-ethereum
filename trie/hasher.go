@@ -17,12 +17,12 @@
 package trie
 
 import (
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -87,9 +87,11 @@ func (h *hasher) hash(n node, force bool, tnd common.TrieNodeData) (hashed node,
 			cached.flags.hash = hn
 
 			if common.PathLength+common.VersionLength > 0 {
-				modifiedHash := modifyHashV4(n, hn, CurrentBlockNum, tnd)
+				start := time.Now()
+				modifiedHash := modifyHashV5(n, hn, CurrentBlockNum, tnd)
 				cached.flags.hash = modifiedHash
 				hashed = modifiedHash
+				common.ModifyHashes += time.Since(start)
 			}
 
 		} else {
@@ -103,9 +105,11 @@ func (h *hasher) hash(n node, force bool, tnd common.TrieNodeData) (hashed node,
 			cached.flags.hash = hn
 
 			if common.PathLength+common.VersionLength > 0 {
-				modifiedHash := modifyHashV4(n, hn, CurrentBlockNum, tnd)
+				start := time.Now()
+				modifiedHash := modifyHashV5(n, hn, CurrentBlockNum, tnd)
 				cached.flags.hash = modifiedHash
 				hashed = modifiedHash
+				common.ModifyHashes += time.Since(start)
 			}
 
 		} else {
@@ -118,41 +122,23 @@ func (h *hasher) hash(n node, force bool, tnd common.TrieNodeData) (hashed node,
 	}
 }
 
-// modifyHash returns a new hashNode without finding proper nonce (jmlee)
-// just overlap the hash prefix with what we want
-func modifyHash(n node, hash hashNode, blockNum uint64) hashNode {
-	bs := make([]byte, 8)
-	binary.BigEndian.PutUint64(bs, blockNum)
-
-	newHash := hashNode(hash)
-	copy(newHash, hash)
-	switch n.(type) {
-	case *shortNode, *fullNode:
-		copy(newHash[:common.PrefixLength], bs[8-common.PrefixLength:])
-		return newHash
-	default:
-		return nil
-	}
-}
-
 // (jmlee) modify nodeHash as I want
-func modifyHashV4(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeData) hashNode {
-	fmt.Println("in modifyHashV5()")
+func modifyHashV5(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeData) hashNode {
+	// fmt.Println("\nin modifyHashV5()")
 	// fmt.Println("  original path:", tnd.Path)
 	// fmt.Println("  version:", blockNum)
 	// fmt.Println("  original hash:", hash)
-	// fmt.Println("  HashingStateTrie:", common.HashingStateTrie)
-	// fmt.Println("  HashingStorageTrie:", common.HashingStorageTrie)
+
 	if common.HashingStateTrie && common.HashingStorageTrie {
 		fmt.Println("ERROR: HashingStateTrie and HashingStorageTrie could not be both true")
+		fmt.Println("  current block number:", blockNum)
 		os.Exit(1)
 	}
-	if common.MaxPathLen < len(tnd.Path) {
-		common.MaxPathLen = len(tnd.Path)
-		common.MaxPathLenBlockNum = blockNum
+	if !common.HashingStateTrie && !common.HashingStorageTrie && blockNum != 0 {
+		fmt.Println("ERROR: HashingStateTrie and HashingStorageTrie could not be both false")
+		fmt.Println("  current block number:", blockNum)
+		os.Exit(1)
 	}
-	// fmt.Println("  max path len:", common.MaxPathLen)
-	// fmt.Println("  max path len at block:", common.MaxPathLenBlockNum)
 
 	switch n.(type) {
 	case *shortNode, *fullNode:
@@ -162,6 +148,7 @@ func modifyHashV4(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeDat
 
 		// Adjust path length to match PathLength (Trim or Pad)
 		path := tnd.Path
+		pathLen := len(path)
 		if len(path) > common.PathLength {
 			path = path[:common.PathLength] // Keep leftmost PathLength elements
 			// fmt.Println("  path trimmed to:", path)
@@ -175,30 +162,76 @@ func modifyHashV4(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeDat
 			}
 			// fmt.Println("  path padded to:", path)
 		}
-
 		// Convert path bytes (0~15) to hex string using lookup table
 		var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"}
-		pathHex := ""
+		pathStr := ""
 		for _, b := range path {
-			pathHex += indices[b] // Faster than fmt.Sprintf or Builder
+			pathStr += indices[b] // Faster than fmt.Sprintf or Builder
 		}
-		// fmt.Println("  path prefix:", pathHex)
+		// fmt.Println("  path prefix:", pathStr)
 
 		//
 		// Convert blockNum to fixed-length hex string
 		//
-		blockHex := fmt.Sprintf("%0*x", common.VersionLength, blockNum)
-		// fmt.Println("  block prefix:", blockHex)
+		blockStr := ""
+		if common.VersionLength > 0 {
+			if common.EnableVersionPadding {
+				blockStr = fmt.Sprintf("%0*x", common.VersionLength, blockNum)
+			} else {
+				blockStr = fmt.Sprintf("%x", blockNum)
+			}
+		}
+		// fmt.Println("  block prefix:", blockStr)
 
 		//
-		// Merge pathHex and blockHex into a single string
+		// Merge pathStr and blockStr into a single string
 		//
 		var prefixStr string
 		if common.AppendPathFirst {
-			prefixStr = pathHex + blockHex
+			prefixStr = pathStr + blockStr
 		} else {
-			prefixStr = blockHex + pathHex
+			prefixStr = blockStr + pathStr
 		}
+
+		sectionStr := ""
+		if common.AppendTrieType {
+			if common.HashingStateTrie && !common.HashingStorageTrie {
+				if common.ModifyHashMethod == "HalfPath" && pathLen > 5 {
+					sectionStr = "e"
+				} else {
+					sectionStr = "d"
+				}
+			} else if !common.HashingStateTrie && common.HashingStorageTrie {
+				sectionStr = "f"
+			} else {
+				fmt.Println("ERROR: HashingStateTrie and HashingStorageTrie could not be both true")
+				fmt.Println("  HashingStateTrie:", common.HashingStateTrie)
+				fmt.Println("  HashingStorageTrie:", common.HashingStorageTrie)
+				fmt.Println("  current block number:", blockNum)
+				os.Exit(1)
+			}
+		}
+		// fmt.Println("  sectionStr:", sectionStr)
+
+		addrHashStr := ""
+		if common.AppendContractAddrHash {
+			if !common.HashingStateTrie && common.HashingStorageTrie {
+				addrHashHex := common.AddrHashOfCurrentStorageTrie.Hex()[2:]
+				addrHashStr = addrHashHex[:common.AddrHashPrefixLen]
+				// fmt.Println("  common.AddrHashPrefixLen:", common.AddrHashPrefixLen)
+				// fmt.Println("  addrHashHex:", addrHashHex)
+				// fmt.Println("  addrHashStr:", addrHashStr)
+
+				// TODO(jmlee): improve this corner case handling
+				if common.ModifyHashMethod == "PrefixTree_fixed" {
+					prefixStr = strings.Replace(prefixStr, strings.Repeat("0", common.AddrHashPrefixLen), "", 1)
+					// fmt.Println("  0-padding removed: remove ", common.AddrHashPrefixLen, "zeros")
+				}
+			}
+		}
+		// fmt.Println("  addrHashStr:", addrHashStr)
+		prefixStr = sectionStr + addrHashStr + prefixStr
+
 		if len(prefixStr) < common.LastPaddingBound {
 			prefixStr += strings.Repeat("0", common.LastPaddingBound-len(prefixStr))
 		}
@@ -208,7 +241,17 @@ func modifyHashV4(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeDat
 		// Overwrite the front part of newHashHex with prefixStr
 		//
 		newHashHex := prefixStr + hex.EncodeToString(hash)[len(prefixStr):]
+
+		if common.AppendPathLen {
+			pathLenHex := fmt.Sprintf("%0*x", common.LenOfPathLen, pathLen)
+			newHashHex = newHashHex[:len(newHashHex)-common.LenOfPathLen] + pathLenHex
+		}
 		// fmt.Println("  modified hex hash:", newHashHex)
+		if len(newHashHex) != 64 {
+			fmt.Println("  ERROR: newHashHex len is not 64")
+			fmt.Println("  len(newHashHex):", len(newHashHex))
+			os.Exit(1)
+		}
 
 		// Convert the modified hex string back to bytes efficiently
 		newHash, err := hex.DecodeString(newHashHex)

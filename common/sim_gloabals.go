@@ -39,36 +39,42 @@ var (
 	// enable snapshot or not
 	EnableSnapshot = false
 
-
-
 	//
 	// modify nodeHash options
 	//
-	// prefixing trie node's hash value
-	EnableNodePrefixing = false // TODO(jmlee): maybe can deprecate this
-	// actually, this may be prefix bytes (ex. PrefixLength = 4 -> prefixes 8 characters)
-	PrefixLength     = 0    // TODO(jmlee): deprecate this, replaced with VersionLength
 
 	// length for each prefixes, sum of lengths must be <= 64 (= hash's hex string length)
-	VersionLength    = 0    // (recommanded: 8)
+	VersionLength        = 8    // hex string length when overwriting version number to nodeHash (recommanded: 8)
+	EnableVersionPadding = true // option: 0-padding version string
 
-	PathLength       = 0   // 
-	FixedPathLength = false // option: path length is fixed or not	
-	PathPaddingAtEnd = true // option: 0-padding position for path -> end or front (should be true following PrefixTree)
-	
-	AppendPathFirst  = false // option: 
-	
+	PathLength       = 16    // hex string length when overwriting path to nodeHash, max(len(path)) = 16 until 6M blocks, so this should be >= 16
+	FixedPathLength  = false // option: path length is fixed or not
+	PathPaddingAtEnd = true  // option: 0-padding position for path -> end or front
+
+	AppendPathFirst = false // option: path-version vs version-path
+
 	LastPaddingBound = 56 // padding prefix until len(prefix) = LastPaddingBound (max: 64, to disable: 0)
-	
-	MaxPathLen = 0 // to measure max path len
-	MaxPathLenBlockNum = uint64(0) // to measure when the path len is max
-	HashingStateTrie = false // flag: now hashing state trie
-	HashingStorageTrie = false // flag: now hashing storage tries
+
+	AppendPathLen = true // option: overwrite len(path) to nodeHash (at the end)
+	LenOfPathLen  = 2    // hex string length when overwriting len(path) to nodeHash, max(len(path)) = 16 until 6M blocks, so 2 is enough to present path len
+
+	AppendTrieType = false // option: distinguish state trie node vs storage trie node -> state trie node: "d" or "e", storage trie node: "f"
+
+	AppendContractAddrHash = false // option: overwrite CA's addrHash to nodeHash
+	AddrHashPrefixLen      = 16    // hex string length when overwriting CA's addrHash to nodeHash, maybe should be >= 16 until 6M blocks
+
+	HashingStateTrie             = false // flag: now hashing state trie
+	HashingStorageTrie           = false // flag: now hashing storage tries
+	AddrHashOfCurrentStorageTrie Hash    // addrHash of CA whose storage trie is being hashed
+
 	// CAUTION: maybe need to remote disk before re-run simulator when modifying nodeHash
+	// CAUTION: modified (root) node hash must not be common.Hash{} (= 0x000...0), this is treated as types.EmptyRootHash
 
+	ModifyHashes time.Duration // execution time of modifyHash() in the current block
 
+	ModifyHashMethod = "PrefixTree_fixed" // option: JMT, JMT_fixed, PrefixTree, PrefixTree_fixed, HalfPath, PBSS, TH, none
 
-	GenesisStateRoot Hash   // TODO(jmlee): temp var, implement this correctly
+	GenesisStateRoot Hash // state root of genesis block
 
 	// opcode stats (opcode execution num/time/cost)
 	LoggingOpcodeStats = false
@@ -118,7 +124,7 @@ func GetSimulationTypeName() string {
 		} else {
 			chainOptions = append(chainOptions, "F")
 		}
-		if EnableNodePrefixing {
+		if VersionLength+PathLength > 0 {
 			chainOptions = append(chainOptions, "N")
 		}
 	}
@@ -189,6 +195,7 @@ type SimBlock struct {
 	SnapshotStorageReads   time.Duration
 	SnapshotCommits        time.Duration
 	TrieDBCommits          time.Duration
+	ModifyHashes           time.Duration
 	AccountUpdated         int
 	StorageUpdated         int
 	AccountDeleted         int

@@ -104,7 +104,7 @@ func connHandler(conn net.Conn) {
 				}
 
 				response = []byte("success")
-			
+
 			case "setDbPath":
 				// fmt.Println("execute setDbPath()")
 				newDbPath := params[1]
@@ -114,28 +114,32 @@ func connHandler(conn net.Conn) {
 
 			// TODO(jmlee): add option for path-based state scheme
 			case "setSimulationOptions":
-				// fmt.Println("execute setSimulationOptions()")
-				snapshotOption, _ := strconv.ParseInt(params[1], 10, 64)
-				trieNodePrefixLen, _ := strconv.ParseInt(params[2], 10, 64)
-				opcodeLoggingOption, _ := strconv.ParseInt(params[3], 10, 64)
 
-				// enable snapshot or not
-				common.EnableSnapshot = (snapshotOption != 0)
+				fmt.Println("ERROR: setSimulationOptions() is temply depreceated, do not use it or properly update it")
+				os.Exit(1)
 
-				// prefixing trie nodes or not
-				common.PrefixLength = int(trieNodePrefixLen)
-				common.EnableNodePrefixing = (trieNodePrefixLen != 0)
+				// // fmt.Println("execute setSimulationOptions()")
+				// snapshotOption, _ := strconv.ParseInt(params[1], 10, 64)
+				// trieNodePrefixLen, _ := strconv.ParseInt(params[2], 10, 64)
+				// opcodeLoggingOption, _ := strconv.ParseInt(params[3], 10, 64)
 
-				// logging or not
-				common.LoggingOpcodeStats = (opcodeLoggingOption != 0)
+				// // enable snapshot or not
+				// common.EnableSnapshot = (snapshotOption != 0)
 
-				fmt.Println("setSimulationOptions complete")
-				fmt.Println("  common.EnableSnapshot:", common.EnableSnapshot)
-				fmt.Println("  common.EnableNodePrefixing:", common.EnableNodePrefixing)
-				fmt.Println("  common.PrefixLength:", common.PrefixLength)
-				fmt.Println("  common.LoggingOpcodeStats:", common.LoggingOpcodeStats)
+				// // prefixing trie nodes or not
+				// common.PrefixLength = int(trieNodePrefixLen)
+				// common.EnableNodePrefixing = (trieNodePrefixLen != 0)
 
-				response = []byte("success")
+				// // logging or not
+				// common.LoggingOpcodeStats = (opcodeLoggingOption != 0)
+
+				// fmt.Println("setSimulationOptions complete")
+				// fmt.Println("  common.EnableSnapshot:", common.EnableSnapshot)
+				// fmt.Println("  common.EnableNodePrefixing:", common.EnableNodePrefixing)
+				// fmt.Println("  common.PrefixLength:", common.PrefixLength)
+				// fmt.Println("  common.LoggingOpcodeStats:", common.LoggingOpcodeStats)
+
+				// response = []byte("success")
 
 			case "getSimulationTypeName":
 				typeName := common.GetSimulationTypeName()
@@ -414,16 +418,12 @@ func connHandler(conn net.Conn) {
 				// get params
 				// fmt.Println("execute executeTransactionArgsList()")
 
-				if common.EnableNodePrefixing {
+				if common.VersionLength+common.PathLength > 0 {
 					trie.SetCurrentBlockNum(currentBlockNum)
 				}
 
 				if currentBlockNum == 0 {
 					fmt.Println("set genesis state")
-
-					// temp code, delete this later or fix this correctly
-					// beforeOption := common.EnableNodePrefixing
-					// common.EnableNodePrefixing = false
 
 					_, _, err := core.SetupGenesisBlock(frdiskdb, mainTrieDB, nil)
 					if err != nil {
@@ -455,41 +455,6 @@ func connHandler(conn net.Conn) {
 					currentBlockNum++
 					response = []byte("success")
 					break
-
-					// // set (mainnet's) genesis state
-					// mainnetGenesis := core.DefaultGenesisBlock()
-					// mainnetGenesis.ToBlock().Hash()
-					// generatedBlockHeader, err := mainnetGenesis.Commit(frdiskdb, mainTrieDB)
-					// // generatedBlockHeader := mainnetGenesis.MustCommit(frdiskdb, mainTrieDB)
-					// if err != nil {
-					// 	fmt.Println("genesis.Commit err:", err)
-					// 	os.Exit(1)
-					// }
-
-					// // check validity
-					// genesisHeader := myChainContext.GetHeader(common.Hash{}, currentBlockNum)
-					// if common.SimulationMode == common.EthereumMode && generatedBlockHeader.Root() != genesisHeader.Root {
-					// 	if !common.EnableNodePrefixing {
-					// 		fmt.Println("genesis state is wrong")
-					// 		fmt.Println("generated state root:\t", generatedBlockHeader.Root().Hex())
-					// 		fmt.Println("genesis header.Root:\t", genesisHeader.Root.Hex())
-					// 		os.Exit(1)
-					// 	}
-					// }
-
-					// // prepare next block
-					// currentStateRoot = generatedBlockHeader.Root()
-					// fmt.Println("set genesis state complete -> currentStateRoot:", currentStateRoot.Hex())
-
-					// blockNumStr := fmt.Sprintf("%08d", currentBlockNum)
-					// simBlock := new(common.SimBlock) // save simulation result
-					// simBlock.Number = currentBlockNum
-					// simBlock.StateRoot = currentStateRoot
-					// common.SimBlocks[blockNumStr] = simBlock
-
-					// currentBlockNum++
-					// response = []byte("success")
-					// break
 				}
 
 				// code for debugging
@@ -751,7 +716,7 @@ func connHandler(conn net.Conn) {
 					// 	fmt.Println("  -> commit state completed")
 					// }
 
-					if !common.EnableNodePrefixing {
+					if common.VersionLength+common.PathLength == 0 {
 						os.Exit(1)
 					}
 				}
@@ -833,6 +798,10 @@ func connHandler(conn net.Conn) {
 						common.ResetOpcodeStat(currentBlockNum + 1)
 					}
 				}
+
+				// measure modifyHash()'s overhead (this is included in AccountHashes & StorageHashes)
+				simBlock.ModifyHashes = common.ModifyHashes
+				common.ModifyHashes = 0
 
 				//
 				// cleanups
@@ -1207,7 +1176,7 @@ func connHandler(conn net.Conn) {
 					fmt.Println("ERROR: tx gas cost is weird")
 					fmt.Println("  correct tx cost:", attackTxGasCost)
 					fmt.Println("  wrongly measured tx cost:", measuredAttackTxGasCost)
-					
+
 					// TODO(jmlee): why this happen in RL DoS attack simulation
 					// os.Exit(1)
 				}
@@ -1387,6 +1356,7 @@ func StartStateSimulator() {
 
 	// wait for requests
 	for {
+		fmt.Println("  Modify Hash method:", common.ModifyHashMethod)
 		fmt.Println("\nwait for requests...")
 		conn, err := listener.Accept()
 		if err != nil {
