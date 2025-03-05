@@ -44,19 +44,19 @@ var (
 	//
 
 	// length for each prefixes, sum of lengths must be <= 64 (= hash's hex string length)
-	VersionLength        = 8    // hex string length when overwriting version number to nodeHash (recommanded: 8)
+	VersionLength        = 0    // hex string length when overwriting version number to nodeHash (recommanded: 8)
 	EnableVersionPadding = true // option: 0-padding version string
 
-	PathLength       = 16    // hex string length when overwriting path to nodeHash, max(len(path)) = 16 until 6M blocks, so this should be >= 16
+	PathLength       = 0     // hex string length when overwriting path to nodeHash, max(len(path)) = 16 until 6M blocks, so this should be >= 16
 	FixedPathLength  = false // option: path length is fixed or not
 	PathPaddingAtEnd = true  // option: 0-padding position for path -> end or front
 
 	AppendPathFirst = false // option: path-version vs version-path
 
-	LastPaddingBound = 56 // padding prefix until len(prefix) = LastPaddingBound (max: 64, to disable: 0)
+	LastPaddingBound = 0 // padding prefix until len(prefix) = LastPaddingBound (max: 64, to disable: 0)
 
-	AppendPathLen = true // option: overwrite len(path) to nodeHash (at the end)
-	LenOfPathLen  = 2    // hex string length when overwriting len(path) to nodeHash, max(len(path)) = 16 until 6M blocks, so 2 is enough to present path len
+	AppendPathLen = false // option: overwrite len(path) to nodeHash (at the end)
+	LenOfPathLen  = 2     // hex string length when overwriting len(path) to nodeHash, max(len(path)) = 16 until 6M blocks, so 2 is enough to present path len
 
 	AppendTrieType = false // option: distinguish state trie node vs storage trie node -> state trie node: "d" or "e", storage trie node: "f"
 
@@ -72,7 +72,7 @@ var (
 
 	ModifyHashes time.Duration // execution time of modifyHash() in the current block
 
-	ModifyHashMethod = "PrefixTree_fixed" // option: JMT, JMT_fixed, PrefixTree, PrefixTree_fixed, HalfPath, PBSS, TH, none
+	ModifyHashMethod = "none" // option: JMT, JMT_fixed, PrefixTree, PrefixTree_fixed, HalfPath, PBSS, TH, none
 
 	GenesisStateRoot Hash // state root of genesis block
 
