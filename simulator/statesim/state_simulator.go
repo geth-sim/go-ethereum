@@ -492,8 +492,8 @@ func connHandler(conn net.Conn) {
 					// break
 				}
 
-				// TODO(jmlee): temp code, delete this later
-				beforeStateRoot := currentStateRoot
+				// code for debugging
+				// beforeStateRoot := currentStateRoot
 
 				//
 				// get header
@@ -739,17 +739,17 @@ func connHandler(conn net.Conn) {
 				if common.SimulationMode == common.EthereumMode && currentStateRoot != header.Root {
 					fmt.Println("ERR: executeTransactionArgsList: Ethereum state not match")
 
-					// temp code, delete this later
-					if common.IsPathScheme || !common.IsArchiveMode {
-						fmt.Println("commit state... for state root:", beforeStateRoot.Hex())
-						stateDB, err := state.New(beforeStateRoot, stateCache, mySnaps)
-						if err != nil {
-							fmt.Println("ERROR: state.New() err:", err)
-							os.Exit(1)
-						}
-						stateDB.Database().TrieDB().Commit(beforeStateRoot, false)
-						fmt.Println("  -> commit state completed")
-					}
+					// code for debugging
+					// if common.IsPathScheme || !common.IsArchiveMode {
+					// 	fmt.Println("commit state... for state root:", beforeStateRoot.Hex())
+					// 	stateDB, err := state.New(beforeStateRoot, stateCache, mySnaps)
+					// 	if err != nil {
+					// 		fmt.Println("ERROR: state.New() err:", err)
+					// 		os.Exit(1)
+					// 	}
+					// 	stateDB.Database().TrieDB().Commit(beforeStateRoot, false)
+					// 	fmt.Println("  -> commit state completed")
+					// }
 
 					if !common.EnableNodePrefixing {
 						os.Exit(1)
@@ -1284,7 +1284,7 @@ func connHandler(conn net.Conn) {
 			case "stopSimulation":
 				fmt.Println("stop simulation")
 				os.Exit(1)
-			
+
 			case "test":
 				trie.ReloadTrieNodes()
 

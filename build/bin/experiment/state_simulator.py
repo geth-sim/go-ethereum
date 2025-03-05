@@ -628,26 +628,26 @@ if __name__ == "__main__":
     # 
     # sync simulation
     # 
-    dbPathPrefix = "/ethereum/th_plus/stateTries/"
-    protocol = "ethereum"
-    # protocol = "trie-hashimoto"
-    blockNum = 10000000
-    stateRootToSync = state_roots[protocol][blockNum]
-    stateScheme = "hash"
-    sorted = ""
-    # sorted = "_random"
-    # sorted = "_sorted"
-    dbPath = dbPathPrefix + protocol + "/" + str(blockNum) + "_" + stateRootToSync + "_" + stateScheme + sorted + "/"
-    print("dbPath to get trie nodes:", dbPath)
-    # jsonFilePath = 
-    # with open(file_path, 'r') as file:
-    #     data = json.load(file)
+    # dbPathPrefix = "/ethereum/th_plus/stateTries/"
+    # protocol = "ethereum"
+    # # protocol = "trie-hashimoto"
+    # blockNum = 10000000
+    # stateRootToSync = state_roots[protocol][blockNum]
+    # stateScheme = "hash"
+    # sorted = ""
+    # # sorted = "_random"
+    # # sorted = "_sorted"
+    # dbPath = dbPathPrefix + protocol + "/" + str(blockNum) + "_" + stateRootToSync + "_" + stateScheme + sorted + "/"
+    # print("dbPath to get trie nodes:", dbPath)
+    # # jsonFilePath = 
+    # # with open(file_path, 'r') as file:
+    # #     data = json.load(file)
     
-    setDbPath(dbPath)
-    setDatabase(False)
-    benchmarkSync(stateRootToSync)
+    # setDbPath(dbPath)
+    # setDatabase(False)
+    # benchmarkSync(stateRootToSync)
     
-    sys.exit()
+    # sys.exit()
 
 
 
