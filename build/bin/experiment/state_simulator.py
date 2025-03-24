@@ -414,6 +414,14 @@ def inspectAndCopyState(blockNum, stateRoot, copyStateHash, copyStateHashSnap, c
     # print("inspectAndCopyState result:", result)
     return result
 
+# convertKeyalues reinserts kv pairs with different kv pairs to check disk size diffs
+def convertKeyalues():
+    cmd = str("convertKeyalues")
+
+    client_socket.send(cmd.encode())
+    data = client_socket.recv(1024)
+    result = data.decode()
+
 # stop simulation
 def stopSimulation():
     cmd = str("stopSimulation")
@@ -588,6 +596,13 @@ if __name__ == "__main__":
 
     # for development
     # test()
+    # sys.exit()
+
+
+
+    # run convertKeyalues()
+    # setDatabase(False)
+    # convertKeyalues()
     # sys.exit()
 
 

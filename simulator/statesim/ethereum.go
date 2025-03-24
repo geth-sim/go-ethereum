@@ -101,6 +101,25 @@ func SetDbPath(dbPath string) {
 	}
 }
 
+func openLevelDB(dbPath string) (ethdb.KeyValueStore, ethdb.Database) {
+	dbPath = leveldbPathPrefix + ServerPort + dbPath
+	fmt.Println("set leveldb at:", dbPath)
+
+	kvdb, err := leveldb.New(dbPath, leveldbCache, leveldbHandles, leveldbNamespace, leveldbReadonly)
+	if err != nil {
+		fmt.Println("leveldb.New error!! ->", err)
+		os.Exit(1)
+	}
+	fmt.Println("leveldb cache size:", leveldbCache, "MB")
+	frdb, err := rawdb.NewDatabaseWithFreezer(kvdb, dbPath, leveldbNamespace, leveldbReadonly)
+	if err != nil {
+		fmt.Println("frdb error:", err)
+		os.Exit(1)
+	}
+
+	return kvdb, frdb
+}
+
 // set disk, stateDB, trieDB
 func setDatabase(deleteDisk bool) {
 

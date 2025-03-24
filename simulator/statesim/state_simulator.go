@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"math/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -26,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/trie"
@@ -33,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/triedb/pathdb"
 	"github.com/holiman/uint256"
 	"github.com/syndtr/goleveldb/leveldb"
+	"golang.org/x/crypto/sha3"
 )
 
 var (
@@ -1250,6 +1253,73 @@ func connHandler(conn net.Conn) {
 
 				response = []byte("success")
 
+			case "convertKeyalues":
+				fmt.Println("execute convertKeyalues()")
+
+				// set options
+				setRandomKey := false
+				setRandomValue := false
+				fmt.Println("  setRandomKey:", setRandomKey, "/ setRandomValue:", setRandomValue)
+
+				start := time.Now()
+
+				// open new db
+				_, newFrdb := openLevelDB("_convert")
+
+				var (
+					trieNodeNum       int
+					trieNodeKeySize   common.StorageSize
+					trieNodeValueSize common.StorageSize
+				)
+
+				// hasher for new key
+				sha := sha3.NewLegacyKeccak256().(crypto.KeccakState)
+
+				// iterate original db
+				it := frdiskdb.NewIterator(nil, nil)
+				defer it.Release()
+				for it.Next() {
+					if trieNodeNum%100000 == 0 {
+						fmt.Print("\r  show intermediate result -> node num: ", trieNodeNum, " / key size: ", trieNodeKeySize, " / value size: ", trieNodeValueSize, " / elapsed: ", time.Since(start))
+					}
+
+					trieNodeNum++
+					trieNodeKeySize += common.StorageSize(len(it.Key()))
+					trieNodeValueSize += common.StorageSize(len(it.Value()))
+
+					// generate unique random hash key
+					newKey := make([]byte, len(it.Key()))
+					copy(newKey, it.Key())
+					if setRandomKey {
+						sha.Reset()
+						sha.Write(append(it.Value(), []byte(strconv.Itoa(trieNodeNum))...))
+						sha.Read(newKey)
+					}
+					// fmt.Println("origin key:", common.Bytes2Hex(it.Key()))
+					// fmt.Println("   new key:", common.Bytes2Hex(newKey))
+
+					// generate random value
+					newValue := make([]byte, len(it.Value()))
+					copy(newValue, it.Value())
+					if setRandomValue {
+						newValue = generateRandomBytes(len(it.Value()))
+					}
+					// fmt.Println("origin value:", common.Bytes2Hex(it.Value()))
+					// fmt.Println("   new value:", common.Bytes2Hex(newValue))
+
+					// insert original value into new db with new key
+					err := newFrdb.Put(newKey, newValue)
+					if err != nil {
+						fmt.Println("Failed to write to DB:", err)
+						os.Exit(1)
+					}
+				}
+
+				fmt.Println("\n\nfinal result -> node num: ", trieNodeNum, " / key size: ", trieNodeKeySize, " / value size: ", trieNodeValueSize, " / elapsed: ", time.Since(start))
+				fmt.Println("  setRandomKey:", setRandomKey, "/ setRandomValue:", setRandomValue)
+
+				response = []byte("success")
+
 			case "stopSimulation":
 				fmt.Println("stop simulation")
 				os.Exit(1)
@@ -1275,6 +1345,14 @@ func connHandler(conn net.Conn) {
 			}
 		}
 	}
+}
+
+func generateRandomBytes(size int) []byte {
+	b := make([]byte, size)
+	for i := range b {
+		b[i] = byte(rand.Intn(256))
+	}
+	return b
 }
 
 // get directory's size in bytes
