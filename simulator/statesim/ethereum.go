@@ -230,14 +230,21 @@ func setDatabase(deleteDisk bool) {
 
 	} else if common.ModifyHashMethod == "PrefixTree" {
 
-		// state/storage key: path 48 + version 8 + nodeHash 8
+		//
+		// v1: state/storage key: path 48 + version 8 + nodeHash 8
+		// infeasible design: error at block 5,871,711 / tx index 35 -> gas limit reached
+		//
+
+		//
+		// v2: state/storage key: path 46 + version 8 + nodeHash 10 -> okay until 6M block
+		//
 
 		// version
 		common.VersionLength = 8
 		common.EnableVersionPadding = true
 
 		// path
-		common.PathLength = 48
+		common.PathLength = 46
 		common.FixedPathLength = true
 		common.PathPaddingAtEnd = true
 		common.AppendPathFirst = true
@@ -245,7 +252,7 @@ func setDatabase(deleteDisk bool) {
 		common.LenOfPathLen = 2
 
 		//
-		common.LastPaddingBound = 56
+		common.LastPaddingBound = 54
 
 		// section byte
 		common.AppendTrieType = false
