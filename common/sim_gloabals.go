@@ -67,6 +67,15 @@ var (
 	HashingStorageTrie           = false // flag: now hashing storage tries
 	AddrHashOfCurrentStorageTrie Hash    // addrHash of CA whose storage trie is being hashed
 
+	ReadAllChildNodes = true // option: read all full node's child nodes when hashing
+	NodeReadFuncCnt = 0 // # of trie.hashdb.Database.node() execution
+	AdditionalNodeReadFuncCnt = 0 // # of trie.hashdb.Database.node() execution due to ReadAllChildNodes option
+	// detailed read stats (these might not be 100% accurate due to goroutines)
+	CleanHitCnt = 0
+	DirtyHitCnt = 0 // this should be 0 in archive mode
+	DiskHitCnt = 0
+	NotFoundHitCnt = 0 // this should be 0
+
 	// CAUTION: maybe need to remote disk before re-run simulator when modifying nodeHash
 	// CAUTION: modified (root) node hash must not be common.Hash{} (= 0x000...0), this is treated as types.EmptyRootHash
 

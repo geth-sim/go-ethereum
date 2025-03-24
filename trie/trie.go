@@ -664,10 +664,15 @@ func (t *Trie) hashRoot() (node, node) {
 	// hashed, cached := h.hash(t.root, true)
 	// new to modify nodeHash as I want (jmlee)
 	var tnd common.TrieNodeData
+	CurrentTrie = t
 	hashed, cached := h.hash(t.root, true, tnd)
 	
 	return hashed, cached
 }
+
+var (
+	CurrentTrie *Trie // this trie is being hashed (jmlee)
+)
 
 // Reset drops the referenced root node and cleans all internal state.
 func (t *Trie) Reset() {

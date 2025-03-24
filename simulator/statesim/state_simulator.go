@@ -620,6 +620,7 @@ func connHandler(conn net.Conn) {
 				//
 				// flush or garbage collect state (codes from writeBlockWithState function in core/blockchain.go)
 				//
+				fmt.Println("flush or garbage collect state")
 				if !common.IsPathScheme {
 					start := time.Now()
 					triedb := stateDB.Database().TrieDB()
@@ -801,6 +802,12 @@ func connHandler(conn net.Conn) {
 						common.ResetOpcodeStat(currentBlockNum + 1)
 					}
 				}
+
+				fmt.Println("NodeReadFuncCnt:", common.NodeReadFuncCnt, "/ AdditionalNodeReadFuncCnt:", common.AdditionalNodeReadFuncCnt)
+				fmt.Println("  clean:", common.CleanHitCnt)
+				fmt.Println("  dirty:", common.DirtyHitCnt)
+				fmt.Println("  disk:", common.DiskHitCnt)
+				fmt.Println("  not found:", common.NotFoundHitCnt)
 
 				// measure modifyHash()'s overhead (this is included in AccountHashes & StorageHashes)
 				simBlock.ModifyHashes = common.ModifyHashes
@@ -1435,6 +1442,7 @@ func StartStateSimulator() {
 	// wait for requests
 	for {
 		fmt.Println("  Modify Hash method:", common.ModifyHashMethod)
+		fmt.Println("  ReadAllChildNodes:", common.ReadAllChildNodes)
 		fmt.Println("\nwait for requests...")
 		conn, err := listener.Accept()
 		if err != nil {
