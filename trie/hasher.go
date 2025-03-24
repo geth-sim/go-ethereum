@@ -305,11 +305,11 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 
 					// check if child node is clean or dirty
 					if hash, _ := child.cache(); hash != nil {
-						// clean child
+						// this is clean child
 						// fmt.Println("  check child", i, "-> clean")
 						collapsed.Children[i], cached.Children[i] = hash, child
 
-						// read all child nodes
+						// additionally read this clean child node (to get childHash)
 						if common.ReadAllChildNodes {
 							// fmt.Println("    additional read occurs for", common.BytesToHash(hash))
 							common.AdditionalNodeReadFuncCnt++
@@ -320,8 +320,9 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 							}
 						}
 					} else {
-						// dirty child
+						// this is dirty child
 						// fmt.Println("  check child", i, "-> dirty")
+						// do not need to additionally read this dirty child node since this is not yet included in clean cache or disk (= notFound)
 						collapsed.Children[i], cached.Children[i] = hasher.hash(child, false, childTnd)
 					}
 				} else {
@@ -342,11 +343,11 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 
 				// check if child node is clean or dirty
 				if hash, _ := child.cache(); hash != nil {
-					// clean child
+					// this is clean child
 					// fmt.Println("  check child", i, "-> clean")
 					collapsed.Children[i], cached.Children[i] = hash, child
 
-					// read all child nodes
+					// additionally read this clean child node (to get childHash)
 					if common.ReadAllChildNodes {
 						// fmt.Println("    additional read occurs for", common.BytesToHash(hash))
 						common.AdditionalNodeReadFuncCnt++
@@ -357,8 +358,9 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 						}
 					}
 				} else {
-					// dirty child
+					// this is dirty child
 					// fmt.Println("  check child", i, "-> dirty")
+					// do not need to additionally read this dirty child node since this is not yet included in clean cache or disk (= notFound)
 					collapsed.Children[i], cached.Children[i] = h.hash(child, false, childTnd)
 				}
 			} else {
