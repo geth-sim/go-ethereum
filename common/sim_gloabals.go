@@ -67,7 +67,7 @@ var (
 	HashingStorageTrie           = false // flag: now hashing storage tries
 	AddrHashOfCurrentStorageTrie Hash    // addrHash of CA whose storage trie is being hashed
 
-	ReadAllChildNodes = true // option: read all full node's child nodes when hashing
+	ReadAllChildNodes = false // option: read all full node's child nodes when hashing
 	NodeReadFuncCnt = 0 // # of trie.hashdb.Database.node() execution
 	AdditionalNodeReadFuncCnt = 0 // # of trie.hashdb.Database.node() execution due to ReadAllChildNodes option
 	// detailed read stats (these might not be 100% accurate due to goroutines)
