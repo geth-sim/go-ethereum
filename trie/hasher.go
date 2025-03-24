@@ -260,7 +260,7 @@ func modifyHashV5(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeDat
 			return nil
 		}
 
-		// fmt.Println("  modified hash (bytes):", newHash, "\n")
+		// fmt.Println("  modified hash:", common.Bytes2Hex(newHash), "\n")
 		return newHash
 	default:
 		return nil

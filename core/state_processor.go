@@ -123,7 +123,7 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 		// original code
 		// root = statedb.IntermediateRoot(config.IsEIP158(blockNumber)).Bytes()
 		// new code
-		statedb.Finalise(config.IsEIP158(blockNumber)) // to reduce trie hashing overhead
+		statedb.Finalise(config.IsEIP158(blockNumber)) // to reduce trie hashing overhead (jmlee)
 	}
 	*usedGas += result.UsedGas
 
