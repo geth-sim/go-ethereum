@@ -34,7 +34,7 @@ var (
 	LevelDBStats = make(map[string]*LevelDBStat)
 
 	// TODO(jmlee): set archive mode or not
-	IsArchiveMode = false
+	IsArchiveMode = true
 
 	// TODO(jmlee): implement path-based scheme
 	// state scheme is path-based or hash-based
@@ -402,7 +402,11 @@ type TrieNodeData struct {
 	EncodedNode []byte
 }
 
+//
 // LevelDB stats (from LevelDB's GetProperty(name string) function)
+// (CAUTION: The statistics are valid only when the simulator is executed from block 0 to the end without interruption. 
+// Restarting the simulator resets all previously accumulated statistics.)
+//
 type CompactionStat struct {
 	Level   int     `json:"level"`
 	Tables  int     `json:"tables"`
