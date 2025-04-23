@@ -56,6 +56,7 @@ var (
 	simBlocksPath   = logFilePath + "simBlocks/"
 	cacheStatsPath  = logFilePath + "cacheStats/"
 	opcodeStatsPath = logFilePath + "opcodeStats/"
+	leveldbStatsPath = logFilePath + "leveldbStats/"
 	errLogPath      = logFilePath + "errLogs/"
 
 	//
@@ -813,6 +814,45 @@ func connHandler(conn net.Conn) {
 				simBlock.ModifyHashes = common.ModifyHashes
 				common.ModifyHashes = 0
 
+				// save leveldb stats
+				if currentBlockNum % 10000 == 0 {
+					leveldbStat := new(common.LevelDBStat)
+					leveldbStat.BlockNum = currentBlockNum
+
+					properties := map[string]string{
+						"stats":       "leveldb.stats",
+						"iostats":     "leveldb.iostats",
+						"writedelay":  "leveldb.writedelay",
+						"compcount":   "leveldb.compcount",
+						"openedtables": "leveldb.openedtables",
+					}
+				
+					for key, prop := range properties {
+						val, err := diskdb.Stat(prop)
+						if err != nil {
+							fmt.Printf("Property %s: error -> %v\n", prop, err)
+							continue
+						}
+						fmt.Printf("Property %s:\n%s\n\n", prop, val)
+				
+						switch key {
+						case "stats":
+							leveldbStat.Compaction = common.ParseStats(val)
+						case "iostats":
+							leveldbStat.IO = common.ParseIOStats(val)
+						case "writedelay":
+							leveldbStat.WriteDelay = common.ParseWriteDelay(val)
+						case "compcount":
+							leveldbStat.CompactionCount = common.ParseCompCount(val)
+						case "openedtables":
+							n, _ := strconv.Atoi(val)
+							leveldbStat.OpenedTables = n
+						}
+					}
+
+					common.LevelDBStats[blockNumStr] = leveldbStat
+				}
+
 				//
 				// cleanups
 				//
@@ -891,6 +931,40 @@ func connHandler(conn net.Conn) {
 				if common.LoggingOpcodeStats {
 					common.ResetOpcodeStat(currentBlockNum)
 				}
+
+				response = []byte("success")
+
+			case "saveLevelDBStats":
+				// get params
+				fmt.Println("execute saveLevelDBStats()")
+
+				// set file name
+				mapKeys := make([]string, 0)
+				for k, _ := range common.LevelDBStats {
+					mapKeys = append(mapKeys, k)
+				}
+				sort.Strings(mapKeys)
+				firstBlockNum := uint64(0)
+				lastBlockNum := common.LevelDBStats[mapKeys[len(mapKeys)-1]].BlockNum
+				fileName := "leveldb_stats_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + ".json"
+
+				// encoding map to json
+				var jsonData []byte
+				var err error
+				// save all LevelDBStats at once
+				jsonData, err = json.MarshalIndent(common.LevelDBStats, "", "  ")
+				if err != nil {
+					fmt.Println("JSON marshaling error:", err)
+					return
+				}
+
+				// save as a json file
+				err = os.WriteFile(leveldbStatsPath+fileName, jsonData, 0644)
+				if err != nil {
+					fmt.Println("File write error:", err)
+					return
+				}
+				fmt.Println("  saved file name:", fileName)
 
 				response = []byte("success")
 
@@ -1419,12 +1493,27 @@ func StartStateSimulator() {
 	metrics.EnabledExpensive = enabledExpensive
 
 	// create dir if not exist for log files
-	err := os.MkdirAll(errLogPath, os.ModePerm)
+	err := os.MkdirAll(simBlocksPath, os.ModePerm)
 	if err != nil {
 		fmt.Println("ERROR: mkdirAll failed")
 		os.Exit(1)
 	}
-	err = os.MkdirAll(simBlocksPath, os.ModePerm)
+	err = os.MkdirAll(cacheStatsPath, os.ModePerm)
+	if err != nil {
+		fmt.Println("ERROR: mkdirAll failed")
+		os.Exit(1)
+	}
+	err = os.MkdirAll(opcodeStatsPath, os.ModePerm)
+	if err != nil {
+		fmt.Println("ERROR: mkdirAll failed")
+		os.Exit(1)
+	}
+	err = os.MkdirAll(leveldbStatsPath, os.ModePerm)
+	if err != nil {
+		fmt.Println("ERROR: mkdirAll failed")
+		os.Exit(1)
+	}
+	err = os.MkdirAll(errLogPath, os.ModePerm)
 	if err != nil {
 		fmt.Println("ERROR: mkdirAll failed")
 		os.Exit(1)

@@ -349,6 +349,14 @@ def setEnvForEVM(blockNum, stateRoot):
     # print("setEnvForEVM result:", result)
     return result
 
+def saveLevelDBStats():
+    cmd = str("saveLevelDBStats")
+
+    client_socket.send(cmd.encode())
+    data = client_socket.recv(1024)
+    result = data.decode()
+    # print("saveLevelDBStats result:", result)
+
 def saveSimBlocks(fileName, blockNumToSave):
     cmd = str("saveSimBlocks")
     cmd += str(",")
@@ -496,10 +504,12 @@ def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_resu
         if saveResults and blockNum % temp_result_save_inteval == 0 and blockNum > lastKnownBlockNum and blockNum != endBlockNum:
             temp_file_name = "evm_simulation_result_Ethereum_" + str(0) + "_" + str(blockNum) + ".json"
             saveSimBlocks(temp_file_name, temp_result_save_inteval)
+            saveLevelDBStats()
 
     # simulation finished
     if saveResults:
         saveSimBlocks(sim_blocks_file_name, temp_result_save_inteval)
+        saveLevelDBStats()
         print("save result:", sim_blocks_file_name)
 
     print("finish Ethereum EVM simulation")

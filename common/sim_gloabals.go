@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,6 +29,9 @@ var (
 
 	// simulation results, SimBlocks[blockNumStr] = SimBlock
 	SimBlocks = make(map[string]*SimBlock)
+
+	// LevelDB stats, LevelDBStats[blockNumStr] = LevelDBStat
+	LevelDBStats = make(map[string]*LevelDBStat)
 
 	// TODO(jmlee): set archive mode or not
 	IsArchiveMode = false
@@ -396,4 +400,165 @@ type TrieNodeData struct {
 	NodeType string
 
 	EncodedNode []byte
+}
+
+// LevelDB stats (from LevelDB's GetProperty(name string) function)
+type CompactionStat struct {
+	Level   int     `json:"level"`
+	Tables  int     `json:"tables"`
+	SizeMB  float64 `json:"size_mb"`
+	TimeSec float64 `json:"time_sec"`
+	ReadMB  float64 `json:"read_mb"`
+	WriteMB float64 `json:"write_mb"`
+}
+
+type CompactionStatsOutput struct {
+	Stats []CompactionStat `json:"stats"`
+	Total CompactionStat   `json:"total"`
+}
+
+type IOStats struct {
+	ReadMB  float64 `json:"read_mb"`
+	WriteMB float64 `json:"write_mb"`
+}
+
+type WriteDelay struct {
+	DelayN   int     `json:"delay_n"`
+	Delay    string  `json:"delay"`
+	DelaySec float64 `json:"delay_sec"`
+	Paused   bool    `json:"paused"`
+}
+
+type CompCount struct {
+	MemComp       int `json:"mem_comp"`
+	Level0Comp    int `json:"level0_comp"`
+	NonLevel0Comp int `json:"non_level0_comp"`
+	SeekComp      int `json:"seek_comp"`
+}
+
+type LevelDBStat struct {
+	BlockNum        uint64                `json:"block_num"`
+	Compaction      CompactionStatsOutput `json:"compaction"`
+	IO              IOStats               `json:"io"`
+	WriteDelay      WriteDelay            `json:"write_delay"`
+	CompactionCount CompCount             `json:"compaction_count"`
+	OpenedTables    int                   `json:"opened_tables"`
+}
+
+// LevelDB print MiB as MB, so need to convert them for accuracy
+func MiBtoMB(mib float64) float64 {
+	const miToMb = 1.048576
+	mb := mib * miToMb
+	rounded, _ := strconv.ParseFloat(fmt.Sprintf("%.5f", mb), 64)
+	return rounded
+}
+
+func ParseStats(raw string) CompactionStatsOutput {
+	// e.g.,
+	// 	Compactions
+	// 	Level |   Tables   |    Size(MB)   |    Time(sec)  |    Read(MB)   |   Write(MB)
+	//    -------+------------+---------------+---------------+---------------+---------------
+	// 	  0   |          0 |       0.00000 |    2006.46115 |       0.00000 | 1281697.25207
+	// 	  1   |        528 |    1050.89133 |    8159.66828 | 1315175.55528 | 1313873.02606
+	// 	  2   |       1068 |    2091.47431 |    1213.24795 |  120415.45560 |  120414.95415
+	// 	  3   |       4943 |    9999.38435 |       0.00000 |       0.00000 |       0.00000
+	// 	  4   |      49424 |   99998.67841 |       0.00000 |       0.00000 |       0.00000
+	// 	  5   |     494279 |  999998.49897 |       0.00000 |       0.00000 |       0.00000
+	// 	  6   |      82605 |  167255.29403 |       0.00000 |       0.00000 |       0.00000
+	//    -------+------------+---------------+---------------+---------------+---------------
+	// 	Total |     632847 | 1280394.22141 |   11379.37738 | 1435591.01087 | 2715985.23228
+
+	lines := strings.Split(raw, "\n")
+	stats := []CompactionStat{}
+	var total CompactionStat
+
+	start := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		if strings.HasPrefix(line, "-------") {
+			start = true
+			continue
+		}
+		if !start || line == "" {
+			continue
+		}
+
+		if strings.HasPrefix(line, "Total") {
+			parts := strings.Split(line, "|")
+			if len(parts) < 6 {
+				continue
+			}
+			total.Level = -1
+			total.Tables, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+			total.SizeMB, _ = strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+			total.TimeSec, _ = strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
+			total.ReadMB, _ = strconv.ParseFloat(strings.TrimSpace(parts[4]), 64)
+			total.WriteMB, _ = strconv.ParseFloat(strings.TrimSpace(parts[5]), 64)
+
+			total.SizeMB = MiBtoMB(total.SizeMB)
+			total.ReadMB = MiBtoMB(total.ReadMB)
+			total.WriteMB = MiBtoMB(total.WriteMB)
+			continue
+		}
+
+		if strings.Contains(line, "|") {
+			parts := strings.Split(line, "|")
+			if len(parts) < 6 {
+				continue
+			}
+			level, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+			tables, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+			sizeMB, _ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+			timeSec, _ := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
+			readMB, _ := strconv.ParseFloat(strings.TrimSpace(parts[4]), 64)
+			writeMB, _ := strconv.ParseFloat(strings.TrimSpace(parts[5]), 64)
+
+			stats = append(stats, CompactionStat{
+				Level:   level,
+				Tables:  tables,
+				SizeMB:  MiBtoMB(sizeMB),
+				TimeSec: timeSec,
+				ReadMB:  MiBtoMB(readMB),
+				WriteMB: MiBtoMB(writeMB),
+			})
+		}
+	}
+
+	return CompactionStatsOutput{
+		Stats: stats,
+		Total: total,
+	}
+}
+
+func ParseIOStats(raw string) IOStats {
+	// e.g., "Read(MB):8455544.72528 Write(MB):3986768.26486"
+	fields := strings.Fields(raw)
+	read, _ := strconv.ParseFloat(strings.Split(fields[0], ":")[1], 64)
+	write, _ := strconv.ParseFloat(strings.Split(fields[1], ":")[1], 64)
+	return IOStats{MiBtoMB(read), MiBtoMB(write)}
+}
+
+func ParseWriteDelay(raw string) WriteDelay {
+	// e.g., "DelayN:0 Delay:0s Paused:false"
+	parts := strings.Fields(raw)
+	n, _ := strconv.Atoi(strings.Split(parts[0], ":")[1])
+	delay := strings.Split(parts[1], ":")[1]
+	delaySec := 0.0
+	delayDur, err := time.ParseDuration(delay)
+	if err == nil {
+		delaySec = delayDur.Seconds()
+	}
+	paused, _ := strconv.ParseBool(strings.Split(parts[2], ":")[1])
+	return WriteDelay{n, delay, delaySec, paused}
+}
+
+func ParseCompCount(raw string) CompCount {
+	// e.g., "MemComp:2508 Level0Comp:627 NonLevel0Comp:30090 SeekComp:0"
+	parts := strings.Fields(raw)
+	m, _ := strconv.Atoi(strings.Split(parts[0], ":")[1])
+	l0, _ := strconv.Atoi(strings.Split(parts[1], ":")[1])
+	nl0, _ := strconv.Atoi(strings.Split(parts[2], ":")[1])
+	seek, _ := strconv.Atoi(strings.Split(parts[3], ":")[1])
+	return CompCount{m, l0, nl0, seek}
 }
