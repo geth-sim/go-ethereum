@@ -1055,6 +1055,9 @@ func connHandler(conn net.Conn) {
 
 				fileName := params[1]
 				blockNumToSave, _ := strconv.ParseUint(params[2], 10, 64)
+				if blockNumToSave > currentBlockNum-1 {
+					blockNumToSave = currentBlockNum - 1
+				}
 
 				// TODO(jmlee): do not receive filaName from python client
 				mapKeys := make([]string, 0)
@@ -1110,28 +1113,36 @@ func connHandler(conn net.Conn) {
 
 				// save Ethane's additional indices
 				if common.SimulationMode == common.EthaneMode {
-					// TODO(jmlee): avoid out of memory error
-					// fmt.Println("try to save Ethane indexes")
-					// indices := map[string]interface{}{
-					// 	"K_A": common.AddrToKeyActive,
-					// 	"K_I": common.AddrToKeyInactive,
-					// 	"D_A": common.KeysToDelete,
-					// 	"D_I": common.RestoredKeys,
-					// }
+					fmt.Println("try to save Ethane indexes")
 
-					// jsonData, err = json.MarshalIndent(indices, "", "  ")
-					// if err != nil {
-					// 	fmt.Println("JSON marshaling error:", err)
-					// 	return
-					// }
+					// Generate the file name
+					indicesFileName := fmt.Sprintf(common.GetSimulationTypeName()+"_indices_%d_%d_%d_%d.json", currentBlockNum-1, deleteEpoch, inactivateEpoch, inactivateCriterion)
 
-					// indiciesFileName := "ethane_indices_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
-					// err = os.WriteFile(simBlocksPath+indiciesFileName, jsonData, 0644)
-					// if err != nil {
-					// 	fmt.Println("File write error:", err)
-					// 	return
-					// }
-					// fmt.Println("  saved indices file name:", indiciesFileName)
+					file, err := os.Create(simBlocksPath + indicesFileName)
+					if err != nil {
+						fmt.Println("ERROR: os.Create() ->", err)
+						os.Exit(1)
+					}
+					defer file.Close()
+
+					// Create a JSON encoder (streaming mode)
+					encoder := json.NewEncoder(file)
+					encoder.SetIndent("", "  ")
+
+					// Stream JSON data to the file
+					indices := map[string]interface{}{
+						"K_A": common.AddrToKeyActive,
+						"K_I": common.AddrToKeyInactive,
+						"D_A": common.KeysToDelete,
+						"D_I": common.RestoredKeys,
+					}
+
+					if err := encoder.Encode(indices); err != nil {
+						fmt.Println("ERROR: encoder.Encode() ->", err)
+						os.Exit(1)
+					}
+
+					fmt.Println("  saved indices file name:", indicesFileName)
 				}
 
 				// commit snapshot
@@ -1247,12 +1258,12 @@ func connHandler(conn net.Conn) {
 					}
 				}
 				if common.SimulationMode == common.EthaneMode {
-					// TODO(jmlee): implement here
+					// load indices (K_A, K_I, D_A, D_I)
 
 					common.NextKey = latestSimBlock.LastActiveKey + 1
 					common.InactiveTrieRoot = latestSimBlock.SubStateRoot
 
-					indiciesFileName := "ethane_indices_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
+					indiciesFileName := common.GetSimulationTypeName() + "_indices_" + strconv.FormatUint(currentBlockNum-1, 10) + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
 					indiciesFile, err := os.ReadFile(simBlocksPath + indiciesFileName)
 					if err != nil {
 						fmt.Println("Error opening Ethane's indicies file:", err)
