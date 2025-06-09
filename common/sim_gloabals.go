@@ -172,7 +172,7 @@ func GetSimulationTypeName() string {
 		name += "_" + logOptionName
 	}
 
-	fmt.Println("name:", name)
+	// fmt.Println("name:", name)
 	return name
 }
 

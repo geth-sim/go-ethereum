@@ -777,15 +777,15 @@ func connHandler(conn net.Conn) {
 				// print trie node read stats
 				// fmt.Println()
 				// fmt.Println("Geth trie cache size:", trieCacheSize, "MB / dirty cache size:", dirtyCacheSize, "MB")
-				if common.IsPathScheme {
-					pathdb.PrintReadStats()
-					pathdb.ResetReadStats()
-				} else {
-					hashdb.PrintReadStats()
-				}
+				// if common.IsPathScheme {
+				// 	pathdb.PrintReadStats()
+				// 	pathdb.ResetReadStats()
+				// } else {
+				// 	hashdb.PrintReadStats()
+				// }
 				// fmt.Println()
 				// fmt.Println("LevelDB cache size:", leveldbCache, "MB")
-				leveldb.PrintReadStats()
+				// leveldb.PrintReadStats()
 				if currentBlockNum%1000 == 0 {
 					if common.LoggingReadStats {
 						var nums, times, sizes map[string]int64
