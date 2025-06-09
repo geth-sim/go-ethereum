@@ -52,12 +52,12 @@ var (
 	// log files
 	//
 	// simulation result log file path
-	logFilePath     = "./logFiles/evm/"
-	simBlocksPath   = logFilePath + "simBlocks/"
-	cacheStatsPath  = logFilePath + "cacheStats/"
-	opcodeStatsPath = logFilePath + "opcodeStats/"
+	logFilePath      = "./logFiles/evm/"
+	simBlocksPath    = logFilePath + "simBlocks/"
+	cacheStatsPath   = logFilePath + "cacheStats/"
+	opcodeStatsPath  = logFilePath + "opcodeStats/"
 	leveldbStatsPath = logFilePath + "leveldbStats/"
-	errLogPath      = logFilePath + "errLogs/"
+	errLogPath       = logFilePath + "errLogs/"
 
 	//
 	// etc
@@ -67,6 +67,7 @@ var (
 	diskSizeMeasureEpoch   = uint64(10000)
 	diskSizeMeasureCnt     = 0
 	diskSizeMeasureElapsed time.Duration
+	saveLevelDBStatsEpoch  = uint64(100000)
 )
 
 func connHandler(conn net.Conn) {
@@ -181,7 +182,7 @@ func connHandler(conn net.Conn) {
 
 				myChainContext.Headers[header.Number.Uint64()] = &header
 
-				fmt.Println("success insertHeader -> blockNum:", header.Number)
+				// fmt.Println("success insertHeader -> blockNum:", header.Number)
 
 				response = []byte("success")
 
@@ -477,7 +478,7 @@ func connHandler(conn net.Conn) {
 				//
 				// set stateDB
 				//
-				fmt.Println("set stateDB")
+				// fmt.Println("set stateDB")
 				blockStartTime := time.Now()
 				if common.EnableSnapshot && mySnaps == nil {
 					mySnapconfig := snapshot.Config{
@@ -517,7 +518,7 @@ func connHandler(conn net.Conn) {
 				//
 				// execute transactionArgsList
 				//
-				fmt.Println("execute transactions")
+				// fmt.Println("execute transactions")
 				stateDB.StartPrefetcher("miner") // when snapshot is enabled, read needed trie nodes at background
 				gasPool := new(core.GasPool).AddGas(header.GasLimit)
 				deleteEmptyObjects := myChainConfig.IsEIP158(header.Number) // blockNum > 2,675,000
@@ -686,8 +687,8 @@ func connHandler(conn net.Conn) {
 
 					if metrics.EnabledExpensive {
 						diskCommits := time.Since(start)
-						fmt.Println("trie.Database.Commit() time:", diskCommits.Nanoseconds(), "ns")
 						simBlock.DiskCommits += diskCommits
+						// fmt.Println("trie.Database.Commit() time:", diskCommits.Nanoseconds(), "ns")
 					}
 
 				} else {
@@ -701,14 +702,9 @@ func connHandler(conn net.Conn) {
 
 				// check results
 				simBlock.BlockExecuteTime = time.Since(blockStartTime)
-				fmt.Println("<<< execution success for block", header.Number, ">>>", "( mode:", common.GetSimulationTypeName(), "/ port:", ServerPort, ")")
-				fmt.Println("  current state root:", currentStateRoot.Hex())
-				fmt.Println("  sub state root:", simBlock.SubStateRoot.Hex())
-				fmt.Println("  mainnet header.Root:", header.Root.Hex())
-				fmt.Println("  executed txArgs len:", len(txArgsList))
+				fmt.Println("<<< execution success for block", header.Number, ">>>", "( mode:", common.GetSimulationTypeName(), "/ port:", ServerPort, ")",
+					"\n  current state root:", currentStateRoot.Hex())
 				if common.SimulationMode == common.EthereumMode && currentStateRoot != header.Root {
-					fmt.Println("ERR: executeTransactionArgsList: Ethereum state not match")
-
 					// code for debugging
 					// if common.IsPathScheme || !common.IsArchiveMode {
 					// 	fmt.Println("commit state... for state root:", beforeStateRoot.Hex())
@@ -722,6 +718,11 @@ func connHandler(conn net.Conn) {
 					// }
 
 					if common.VersionLength+common.PathLength == 0 {
+						fmt.Println("ERR: executeTransactionArgsList: Ethereum state not match !!!")
+						fmt.Println("  current state root:", currentStateRoot.Hex())
+						fmt.Println("  sub state root:", simBlock.SubStateRoot.Hex())
+						fmt.Println("  mainnet header.Root:", header.Root.Hex())
+						fmt.Println("  executed txArgs len:", len(txArgsList))
 						os.Exit(1)
 					}
 				}
@@ -774,16 +775,16 @@ func connHandler(conn net.Conn) {
 				// TODO(jmlee): measure path-based state's read stat
 				//  (trie node's key is not 32B length in path-based state, consider this)
 				// print trie node read stats
-				fmt.Println()
-				fmt.Println("Geth trie cache size:", trieCacheSize, "MB / dirty cache size:", dirtyCacheSize, "MB")
+				// fmt.Println()
+				// fmt.Println("Geth trie cache size:", trieCacheSize, "MB / dirty cache size:", dirtyCacheSize, "MB")
 				if common.IsPathScheme {
 					pathdb.PrintReadStats()
 					pathdb.ResetReadStats()
 				} else {
 					hashdb.PrintReadStats()
 				}
-				fmt.Println()
-				fmt.Println("LevelDB cache size:", leveldbCache, "MB")
+				// fmt.Println()
+				// fmt.Println("LevelDB cache size:", leveldbCache, "MB")
 				leveldb.PrintReadStats()
 				if currentBlockNum%1000 == 0 {
 					if common.LoggingReadStats {
@@ -804,29 +805,29 @@ func connHandler(conn net.Conn) {
 					}
 				}
 
-				fmt.Println("NodeReadFuncCnt:", common.NodeReadFuncCnt, "/ AdditionalNodeReadFuncCnt:", common.AdditionalNodeReadFuncCnt)
-				fmt.Println("  clean:", common.CleanHitCnt)
-				fmt.Println("  dirty:", common.DirtyHitCnt)
-				fmt.Println("  disk:", common.DiskHitCnt)
-				fmt.Println("  not found:", common.NotFoundHitCnt)
+				fmt.Println("NodeReadFuncCnt:", common.NodeReadFuncCnt, "/ AdditionalNodeReadFuncCnt:", common.AdditionalNodeReadFuncCnt,
+					"\n  clean:", common.CleanHitCnt,
+					"\n  dirty:", common.DirtyHitCnt,
+					"\n  disk:", common.DiskHitCnt,
+					"\n  not found:", common.NotFoundHitCnt)
 
 				// measure modifyHash()'s overhead (this is included in AccountHashes & StorageHashes)
 				simBlock.ModifyHashes = common.ModifyHashes
 				common.ModifyHashes = 0
 
 				// save leveldb stats
-				if currentBlockNum % 10000 == 0 {
+				if currentBlockNum%saveLevelDBStatsEpoch == 0 {
 					leveldbStat := new(common.LevelDBStat)
 					leveldbStat.BlockNum = currentBlockNum
 
 					properties := map[string]string{
-						"stats":       "leveldb.stats",
-						"iostats":     "leveldb.iostats",
-						"writedelay":  "leveldb.writedelay",
-						"compcount":   "leveldb.compcount",
+						"stats":        "leveldb.stats",
+						"iostats":      "leveldb.iostats",
+						"writedelay":   "leveldb.writedelay",
+						"compcount":    "leveldb.compcount",
 						"openedtables": "leveldb.openedtables",
 					}
-				
+
 					for key, prop := range properties {
 						val, err := diskdb.Stat(prop)
 						if err != nil {
@@ -834,7 +835,7 @@ func connHandler(conn net.Conn) {
 							continue
 						}
 						fmt.Printf("Property %s:\n%s\n\n", prop, val)
-				
+
 						switch key {
 						case "stats":
 							leveldbStat.Compaction = common.ParseStats(val)

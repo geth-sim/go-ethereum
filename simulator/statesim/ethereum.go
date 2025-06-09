@@ -319,33 +319,63 @@ func setDatabase(deleteDisk bool) {
 
 	} else if common.ModifyHashMethod == "PBSS" {
 
-		// TODO(jmlee): Geth does not work properly in situations where nodes with the same node hash are created in several blocks
-		// just activate common.IsPathScheme option or find other proper ways
+		// activate PBSS options
+		common.IsArchiveMode = false
+		common.IsPathScheme = true
 
-		// state key: section 1 + path 24 + 0-padding 37 + path len 2
-		// storage key: section 1 + addrHash 24 + path 24 + 0-padding 13 + path len 2
+		// original hash-based Ethereum
 
 		// version
 		common.VersionLength = 0
 		common.EnableVersionPadding = true
 
 		// path
-		common.PathLength = 24
+		common.PathLength = 0
 		common.FixedPathLength = true
 		common.PathPaddingAtEnd = true
 		common.AppendPathFirst = true
-		common.AppendPathLen = true
+		common.AppendPathLen = false
 		common.LenOfPathLen = 2
 
 		//
-		common.LastPaddingBound = 62
+		common.LastPaddingBound = 0
 
 		// section byte
-		common.AppendTrieType = true
+		common.AppendTrieType = false
 
 		// CA's addrHash
-		common.AppendContractAddrHash = true
-		common.AddrHashPrefixLen = 24
+		common.AppendContractAddrHash = false
+		common.AddrHashPrefixLen = 0
+
+		//
+		// TODO(jmlee): Geth does not work properly in situations where nodes with the same node hash are created in several blocks
+		// just activate common.IsPathScheme option or find other proper ways
+		//
+
+		// // state key: section 1 + path 24 + 0-padding 37 + path len 2
+		// // storage key: section 1 + addrHash 24 + path 24 + 0-padding 13 + path len 2
+
+		// // version
+		// common.VersionLength = 0
+		// common.EnableVersionPadding = true
+
+		// // path
+		// common.PathLength = 24
+		// common.FixedPathLength = true
+		// common.PathPaddingAtEnd = true
+		// common.AppendPathFirst = true
+		// common.AppendPathLen = true
+		// common.LenOfPathLen = 2
+
+		// //
+		// common.LastPaddingBound = 62
+
+		// // section byte
+		// common.AppendTrieType = true
+
+		// // CA's addrHash
+		// common.AppendContractAddrHash = true
+		// common.AddrHashPrefixLen = 24
 
 	} else if common.ModifyHashMethod == "TH" {
 
