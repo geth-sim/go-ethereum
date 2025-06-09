@@ -71,13 +71,13 @@ var (
 	HashingStorageTrie           = false // flag: now hashing storage tries
 	AddrHashOfCurrentStorageTrie Hash    // addrHash of CA whose storage trie is being hashed
 
-	ReadAllChildNodes = false // option: read all full node's child nodes when hashing
-	NodeReadFuncCnt = 0 // # of trie.hashdb.Database.node() execution
-	AdditionalNodeReadFuncCnt = 0 // # of trie.hashdb.Database.node() execution due to ReadAllChildNodes option
+	ReadAllChildNodes         = false // option: read all full node's child nodes when hashing
+	NodeReadFuncCnt           = 0     // # of trie.hashdb.Database.node() execution
+	AdditionalNodeReadFuncCnt = 0     // # of trie.hashdb.Database.node() execution due to ReadAllChildNodes option
 	// detailed read stats (these might not be 100% accurate due to goroutines)
-	CleanHitCnt = 0
-	DirtyHitCnt = 0 // this should be 0 in archive mode
-	DiskHitCnt = 0
+	CleanHitCnt    = 0
+	DirtyHitCnt    = 0 // this should be 0 in archive mode
+	DiskHitCnt     = 0
 	NotFoundHitCnt = 0 // this should be 0
 
 	// CAUTION: maybe need to remote disk before re-run simulator when modifying nodeHash
@@ -402,11 +402,9 @@ type TrieNodeData struct {
 	EncodedNode []byte
 }
 
-//
 // LevelDB stats (from LevelDB's GetProperty(name string) function)
-// (CAUTION: The statistics are valid only when the simulator is executed from block 0 to the end without interruption. 
+// (CAUTION: The statistics are valid only when the simulator is executed from block 0 to the end without interruption.
 // Restarting the simulator resets all previously accumulated statistics.)
-//
 type CompactionStat struct {
 	Level   int     `json:"level"`
 	Tables  int     `json:"tables"`
