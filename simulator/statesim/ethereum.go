@@ -174,7 +174,7 @@ func setDatabase(deleteDisk bool) {
 		//
 
 		//
-		// v2 -> state/storage key: version 8 + path 48 + nodeHash 8
+		// v2 -> state/storage key: version 8 + path 46 + nodeHash 10
 		//
 
 		// version
@@ -182,7 +182,7 @@ func setDatabase(deleteDisk bool) {
 		common.EnableVersionPadding = true
 
 		// path
-		common.PathLength = 48
+		common.PathLength = 46
 		common.FixedPathLength = true
 		common.PathPaddingAtEnd = true
 		common.AppendPathFirst = false
@@ -190,7 +190,7 @@ func setDatabase(deleteDisk bool) {
 		common.LenOfPathLen = 2
 
 		//
-		common.LastPaddingBound = 56
+		common.LastPaddingBound = 54
 
 		// section byte
 		common.AppendTrieType = false

@@ -702,7 +702,7 @@ func connHandler(conn net.Conn) {
 
 				// check results
 				simBlock.BlockExecuteTime = time.Since(blockStartTime)
-				fmt.Println("<<< execution success for block", header.Number, ">>>", "( mode:", common.GetSimulationTypeName(), "/ port:", ServerPort, ")",
+				fmt.Println("<<< execution success for block", header.Number, ">>>", "( mode:", common.GetSimulationTypeName(), "/ ModifyHashMethod:", common.ModifyHashMethod, "/ port:", ServerPort, ")",
 					"\n  current state root:", currentStateRoot.Hex())
 				if common.SimulationMode == common.EthereumMode && currentStateRoot != header.Root {
 					// code for debugging
