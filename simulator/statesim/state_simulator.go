@@ -521,6 +521,14 @@ func connHandler(conn net.Conn) {
 				// fmt.Println("execute transactions")
 				stateDB.StartPrefetcher("miner") // when snapshot is enabled, read needed trie nodes at background
 				gasPool := new(core.GasPool).AddGas(header.GasLimit)
+
+				// add balance & gasLimit for executing random txs
+				// sourceAddr := common.HexToAddress("0x0")
+				// sourceBalance := new(uint256.Int)
+				// sourceBalance.SetFromDecimal("99999999999999")
+				// stateDB.AddBalance(sourceAddr, sourceBalance)
+				// gasPool.AddGas(uint64(30000000))
+				
 				deleteEmptyObjects := myChainConfig.IsEIP158(header.Number) // blockNum > 2,675,000
 				for txIndex, txArg := range txArgsList {
 

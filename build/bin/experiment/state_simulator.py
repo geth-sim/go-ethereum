@@ -4,6 +4,7 @@ import sys
 import multiprocessing as mp
 import subprocess
 import json
+import random
 
 from web3 import Web3
 from datetime import datetime
@@ -515,10 +516,89 @@ def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_resu
     print("finish Ethereum EVM simulation")
     print("elapsed time:", datetime.now()-startTime)
 
+# execute random txs in Ethereum through EVM
+def simulateEthereumEVMRandom(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval, txPerBlock, totalAccountNum):
+    print("run random Ethereum simulation")
+
+    # simulation result file name
+    sim_blocks_file_name = "evm_random_simulation_result_Ethereum_" + str(0) + "_" + str(endBlockNum) + ".json"
+    # temp_result_save_inteval = 500000
+
+    startTime = datetime.now()
+    tempStartTime = startTime
+    loginterval = 1000
+
+    executedTxNum = 0
+    fromAddrInt = 0
+    fromAddr = fromAddrInt.to_bytes(20, 'big')
+    activeAddrPercentage = 10
+
+    # execute blocks
+    for blockNum in range(startBlockNum, endBlockNum+1):
+        # print("\nblock ->", blockNum)
+        # show process
+        if blockNum % loginterval == 0:
+            print("execute block", blockNum, "( port:", SERVER_PORT, "/ mode:", getSimulationTypeName(), "/ block range:", startBlockNum, "~", endBlockNum, ")")
+            currentTime = datetime.now()
+            elapsedTime = currentTime-startTime
+            tempElapsedTime = currentTime-tempStartTime
+            tempStartTime = currentTime
+            print("elapsed:", elapsedTime, "( total bps:", int((blockNum-startBlockNum)/elapsedTime.total_seconds()), 
+                  "/ recent bps:", int(loginterval/tempElapsedTime.total_seconds()), ")")
+            print()
+
+        # execute block
+        # print("for block", blockNum)
+        insertHeader(blockNum)
+        insertUncles(blockNum)
+
+        tx = {}
+        tx['from'] = fromAddr
+        tx['gas'] = 21000
+        tx['gasprice'] = 1
+        tx['input'] = b''
+        tx['maxfeepergas'] = None
+        tx['maxpriorityfeepergas'] = None
+        if blockNum != 0:
+            for i in range(txPerBlock):
+                executedTxNum += 1
+                tx['value'] = executedTxNum
+                tx['nonce'] = executedTxNum
+                if executedTxNum < totalAccountNum:
+                    tx['to'] = executedTxNum.to_bytes(20, 'big')
+                elif executedTxNum >= totalAccountNum:
+                    activeAddrNum = int(totalAccountNum * activeAddrPercentage / 100)
+                    randomInt = random.randint(1, activeAddrNum)
+                    tx['to'] = randomInt.to_bytes(20, 'big')
+                insertTransactionArgs(tx)
+
+        # insertTransactionAccessListsV2(blockNum)
+        executeTransactionArgsList()
+
+        # save intermediate results
+        if saveResults and blockNum % temp_result_save_inteval == 0 and blockNum > lastKnownBlockNum and blockNum != endBlockNum:
+            temp_file_name = "evm_simulation_result_Ethereum_" + str(0) + "_" + str(blockNum) + ".json"
+            saveSimBlocks(temp_file_name, temp_result_save_inteval)
+            saveLevelDBStats()
+
+    # simulation finished
+    if saveResults:
+        saveSimBlocks(sim_blocks_file_name, temp_result_save_inteval)
+        saveLevelDBStats()
+        print("save result:", sim_blocks_file_name)
+
+    print("finish Ethereum EVM simulation")
+    print("elapsed time:", datetime.now()-startTime)
+
 # generate random ethereum address
 def generateRandomAddress():
     randHex = binascii.b2a_hex(os.urandom(20))
     return randHex.decode('utf-8')
+
+def intToAddress(n: int) -> str:
+    if n < 0 or n >= 2**160:
+        raise ValueError("Integer out of range for Ethereum address (0 <= n < 2^160)")
+    return '0x' + format(n, '040x')
 
 def dropPageCaches():
     MY_SUDO_PW = 'FILL_PASSWORD'
@@ -683,6 +763,7 @@ if __name__ == "__main__":
     # setSimulationOptions(enableSnapshot=True, trieNodePrefixLen=6, loggingOpcodeStats=False)
     setDatabase(deleteDisk)
     simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval)
+    # simulateEthereumEVMRandom(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval, 400, 40000000)
     commitDirtyStates()
 
     print("end")
