@@ -821,6 +821,12 @@ func connHandler(conn net.Conn) {
 
 				// print and save leveldb's read stats (cache hit rate, fake reads, bloom filter)
 				// use goleveldb's branch: "measureReadStats"
+				// leveldb.PrintMyReadStats()
+				// if currentBlockNum%saveLevelDBStatsEpoch == 0 {
+				// 	readStatFilePath := leveldbStatsPath
+				// 	readStatFileName := "read_stats_" + common.GetSimulationTypeName() + "_" + common.ModifyHashMethod + "_" + strconv.FormatUint(currentBlockNum, 10) + ".json"
+				// 	leveldb.SaveMyReadStats(readStatFilePath+readStatFileName)
+				// }
 				
 				// measure modifyHash()'s overhead (this is included in AccountHashes & StorageHashes)
 				simBlock.ModifyHashes = common.ModifyHashes
