@@ -819,6 +819,12 @@ func connHandler(conn net.Conn) {
 					"\n  disk:", common.DiskHitCnt,
 					"\n  not found:", common.NotFoundHitCnt)
 
+				simBlock.NodeReadFuncCnt = common.NodeReadFuncCnt
+				simBlock.AdditionalNodeReadFuncCnt = common.AdditionalNodeReadFuncCnt
+				simBlock.CleanHitNum = common.CleanHitCnt
+				simBlock.DirtyHitNum = common.DirtyHitCnt
+				simBlock.DiskHitNum = common.DiskHitCnt
+
 				// print and save leveldb's read stats (cache hit rate, fake reads, bloom filter)
 				// use goleveldb's branch: "measureReadStats"
 				// leveldb.PrintMyReadStats()

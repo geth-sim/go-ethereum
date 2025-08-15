@@ -219,6 +219,14 @@ type SimBlock struct {
 	BlockExecuteTime time.Duration // elapsed time to execute this block
 
 	HistorySize int64 // size of state history for path-based state
+
+	// hit counts when read trie nodes
+	// CAUTION: need mutex to accurately measure these values (but diff is not that big)
+	CleanHitNum int
+	DirtyHitNum int
+	DiskHitNum  int
+	NodeReadFuncCnt int
+	AdditionalNodeReadFuncCnt int
 }
 
 // buffer to save StateDB's metrics
