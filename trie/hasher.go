@@ -230,7 +230,12 @@ func modifyHashV5(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeDat
 			}
 		}
 		// fmt.Println("  addrHashStr:", addrHashStr)
-		prefixStr = sectionStr + addrHashStr + prefixStr
+		if common.ModifyHashMethod != "JMT_fixed" {
+			prefixStr = sectionStr + addrHashStr + prefixStr
+		} else {
+			pathStr = strings.Replace(pathStr, strings.Repeat("0", common.AddrHashPrefixLen), "", 1)
+			prefixStr = blockStr + sectionStr + addrHashStr + pathStr
+		}
 
 		if len(prefixStr) < common.LastPaddingBound {
 			prefixStr += strings.Repeat("0", common.LastPaddingBound-len(prefixStr))
@@ -252,6 +257,17 @@ func modifyHashV5(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeDat
 			fmt.Println("  len(newHashHex):", len(newHashHex))
 			os.Exit(1)
 		}
+
+		// check new hash
+		// fmt.Println("\n<<<<<< modify hash >>>>>>")
+		// fmt.Println("  blockStr:", blockStr)
+		// fmt.Println("  sectionStr:", sectionStr)
+		// fmt.Println("  addrHashStr:", addrHashStr)
+		// fmt.Println("  addrHashHex:", common.AddrHashOfCurrentStorageTrie.Hex())
+		// fmt.Println("  pathStr:", pathStr)
+		// fmt.Println("  pathLen:", pathLen)
+		// fmt.Println("\n  original hash:", hash)
+		// fmt.Println("  newHashHex:", newHashHex)
 
 		// Convert the modified hex string back to bytes efficiently
 		newHash, err := hex.DecodeString(newHashHex)

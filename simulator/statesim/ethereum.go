@@ -211,7 +211,7 @@ func setDatabase(deleteDisk bool) {
 		common.EnableVersionPadding = true
 
 		// path
-		common.PathLength = 29
+		common.PathLength = 53
 		common.FixedPathLength = true
 		common.PathPaddingAtEnd = true
 		common.AppendPathFirst = false
