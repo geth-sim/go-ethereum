@@ -1,8 +1,10 @@
 package common
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	mrand "math/rand"
 	"os"
 	"sort"
 	"strconv"
@@ -79,6 +81,10 @@ var (
 	DirtyHitCnt    = 0 // this should be 0 in archive mode
 	DiskHitCnt     = 0
 	NotFoundHitCnt = 0 // this should be 0
+
+	// implement MyHash (as PrefixTree)
+	AdditionalByteLen = 0 // 0 means that MyHash is disabled
+	prng              = mrand.New(mrand.NewSource(time.Now().UnixNano()))
 
 	// CAUTION: maybe need to remote disk before re-run simulator when modifying nodeHash
 	// CAUTION: modified (root) node hash must not be common.Hash{} (= 0x000...0), this is treated as types.EmptyRootHash
@@ -222,10 +228,10 @@ type SimBlock struct {
 
 	// hit counts when read trie nodes
 	// CAUTION: need mutex to accurately measure these values (but diff is not that big)
-	CleanHitNum int
-	DirtyHitNum int
-	DiskHitNum  int
-	NodeReadFuncCnt int
+	CleanHitNum               int
+	DirtyHitNum               int
+	DiskHitNum                int
+	NodeReadFuncCnt           int
 	AdditionalNodeReadFuncCnt int
 }
 
@@ -571,4 +577,26 @@ func ParseCompCount(raw string) CompCount {
 	nl0, _ := strconv.Atoi(strings.Split(parts[2], ":")[1])
 	seek, _ := strconv.Atoi(strings.Split(parts[3], ":")[1])
 	return CompCount{m, l0, nl0, seek}
+}
+
+// RandomBytes returns a cryptographically secure random slice of given length.
+// It uses crypto/rand, which is slower but suitable for security-sensitive use.
+func RandomBytes(length int) ([]byte, error) {
+	b := make([]byte, length)
+	_, err := rand.Read(b)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// FastRandomBytes returns a pseudo-random slice of given length.
+// It uses math/rand with a pre-seeded PRNG, which is much faster than crypto/rand,
+// but not cryptographically secure. Suitable when only "random-looking" data is needed.
+func FastRandomBytes(length int) []byte {
+	b := make([]byte, length)
+	for i := 0; i < length; i++ {
+		b[i] = byte(prng.Intn(256))
+	}
+	return b
 }
