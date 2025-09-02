@@ -1556,6 +1556,7 @@ func StartStateSimulator() {
 	for {
 		fmt.Println("  Modify Hash method:", common.ModifyHashMethod)
 		fmt.Println("  ReadAllChildNodes:", common.ReadAllChildNodes)
+		fmt.Println("  MyHash length:", common.AdditionalByteLen)
 		fmt.Println("\nwait for requests...")
 		conn, err := listener.Accept()
 		if err != nil {
