@@ -970,7 +970,7 @@ func connHandler(conn net.Conn) {
 				sort.Strings(mapKeys)
 				firstBlockNum := uint64(0)
 				lastBlockNum := common.LevelDBStats[mapKeys[len(mapKeys)-1]].BlockNum
-				fileName := "leveldb_stats_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + ".json"
+				fileName := "leveldb_stats_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + common.ModifyHashMethod + ".json"
 
 				// encoding map to json
 				var jsonData []byte
@@ -1023,7 +1023,7 @@ func connHandler(conn net.Conn) {
 				sort.Strings(mapKeys)
 				firstBlockNum := common.SimBlocks[mapKeys[0]].Number
 				lastBlockNum := common.SimBlocks[mapKeys[len(mapKeys)-1]].Number
-				fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + ".json"
+				fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + common.ModifyHashMethod + ".json"
 
 				// encoding map to json
 				var jsonData []byte

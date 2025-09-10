@@ -489,8 +489,8 @@ def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_resu
             elapsedTime = currentTime-startTime
             tempElapsedTime = currentTime-tempStartTime
             tempStartTime = currentTime
-            print("elapsed:", elapsedTime, "( total bps:", int((blockNum-startBlockNum)/elapsedTime.total_seconds()), 
-                  "/ recent bps:", int(loginterval/tempElapsedTime.total_seconds()), ")")
+            print(f"elapsed: {elapsedTime} ( total bps: {((blockNum - startBlockNum)/elapsedTime.total_seconds()):.2f} "
+                f"/ recent bps: {(loginterval/tempElapsedTime.total_seconds()):.2f} )")
             print()
 
         # execute block
@@ -531,7 +531,12 @@ def simulateEthereumEVMRandom(startBlockNum, endBlockNum, lastKnownBlockNum, tem
     executedTxNum = 0
     fromAddrInt = 0
     fromAddr = fromAddrInt.to_bytes(20, 'big')
-    activeAddrPercentage = 10
+    activeAddrPercentage = 100
+    activeAddrNum = int(totalAccountNum * activeAddrPercentage / 100)
+
+    # independent RNG with fixed seed to fix random sequence
+    SEED = 42
+    rng = random.Random(SEED)  
 
     # execute blocks
     for blockNum in range(startBlockNum, endBlockNum+1):
@@ -543,8 +548,8 @@ def simulateEthereumEVMRandom(startBlockNum, endBlockNum, lastKnownBlockNum, tem
             elapsedTime = currentTime-startTime
             tempElapsedTime = currentTime-tempStartTime
             tempStartTime = currentTime
-            print("elapsed:", elapsedTime, "( total bps:", int((blockNum-startBlockNum)/elapsedTime.total_seconds()), 
-                  "/ recent bps:", int(loginterval/tempElapsedTime.total_seconds()), ")")
+            print(f"elapsed: {elapsedTime} ( total bps: {((blockNum - startBlockNum)/elapsedTime.total_seconds()):.2f} "
+                f"/ recent bps: {(loginterval/tempElapsedTime.total_seconds()):.2f} )")
             print()
 
         # execute block
@@ -559,16 +564,16 @@ def simulateEthereumEVMRandom(startBlockNum, endBlockNum, lastKnownBlockNum, tem
         tx['input'] = b''
         tx['maxfeepergas'] = None
         tx['maxpriorityfeepergas'] = None
+        random_to_addrs = rng.sample(range(1, activeAddrNum + 1), txPerBlock)
         if blockNum != 0:
             for i in range(txPerBlock):
                 executedTxNum += 1
                 tx['value'] = executedTxNum
                 tx['nonce'] = executedTxNum
-                if executedTxNum < totalAccountNum:
+                if executedTxNum <= totalAccountNum:
                     tx['to'] = executedTxNum.to_bytes(20, 'big')
                 elif executedTxNum >= totalAccountNum:
-                    activeAddrNum = int(totalAccountNum * activeAddrPercentage / 100)
-                    randomInt = random.randint(1, activeAddrNum)
+                    randomInt = random_to_addrs[i]
                     tx['to'] = randomInt.to_bytes(20, 'big')
                 insertTransactionArgs(tx)
 
@@ -763,7 +768,7 @@ if __name__ == "__main__":
     # setSimulationOptions(enableSnapshot=True, trieNodePrefixLen=6, loggingOpcodeStats=False)
     setDatabase(deleteDisk)
     simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval)
-    # simulateEthereumEVMRandom(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval, 400, 40000000)
+    # simulateEthereumEVMRandom(startBlockNum, endBlockNum, lastKnownBlockNum, 10000, 800, 40000000)
     commitDirtyStates()
 
     print("end")
