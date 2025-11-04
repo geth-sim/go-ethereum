@@ -61,7 +61,7 @@ Options in `simulator/evmsim/ethereum.go`:
 
 Options in `simulator/evmsim/evm_simulator.go`:
 
-* `diskSizeMeasureEpoch`: 
+* `diskSizeMeasureEpoch`: select interval for measuring disk size
 
 #### Run simulator
 
