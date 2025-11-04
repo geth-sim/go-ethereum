@@ -1,3 +1,100 @@
+## EVM Simulator
+
+A simulator for replaying Ethereum transactions with various modes
+
+### Requirements
+
+* Go (version 1.21 or later)
+* Python (version 3.10 or later)
+* MariaDB (version 10.10 or later)
+* PyMySQL (version 1.0.2 or later)
+
+### Prepare data
+
+* [Get ethereum tx data](https://github.com/eth4ne/go-ethereum/tree/TxSubstate_snap)
+
+* [Create database](https://github.com/eth4ne/eth-analysis)
+
+* prepare LevelDB
+
+git clone https://github.com/geth-sim/goleveldb.git at the same directory as go-ethereum/
+
+set branch as 'benchmark', then it measures leveldb stats
+
+set branch as 'noBenchmark2', then it measures nothing
+
+### How to run simulator
+
+#### Set simulator options
+
+Options in `common/evm_sim_globals.go`:
+
+* `SimulationMode`: select protocol (ethereum, ethanos, ethane)
+
+* `EnableSnapshot`: use snapshot while executing transactions or not
+
+* `EnableNodePrefixing`: forcely prefixing trie node hashes or not
+
+* `PrefixLength`: length of trie node prefix
+
+* `LoggingOpcodeStats`: measure opcodes num / time / gas cost or not
+
+* `LoggingReadStats`: measure read stats from geth & leveldb or not
+
+* `TestInactiveTrieCorrectness`: test inactive trie's correctness or not
+
+* `MeasureKeysToDeleteStat`: measure KeysToDelete-related stats or not
+
+Options in `simulator/evmsim/ethereum.go`:
+
+* `useLeveldb`: use LevelDB or MemoryDB
+
+* `leveldbPathPrefix`: prefix of LevelDB's path (leveldbPath = leveldbPathPrefix + ServerPort)
+
+* `leveldbCache`: size of LevelDB cache
+
+* `trieCacheSize`: size of Geth's trie cache
+
+* `snapshotCacheSize`: size of Geth's snapshot cache
+
+* `enabledExpensive`: measure performance metrics or not (same as metrics.EnabledExpensive)
+
+Options in `simulator/evmsim/evm_simulator.go`:
+
+* `diskSizeMeasureEpoch`: 
+
+#### Run simulator
+
+in `simulator/`, run this command:
+
+```shell
+go run main.go <portNum>
+```
+
+
+
+### How to run client
+
+#### Set options
+
+Options in `build/bin/experiment`:
+
+* DB options: set `db_host`, `db_user`, `db_pass`, `db_name`, `db_port` correctly to get transaction data from MariaDB
+
+* Simulator options: set `SERVER_IP` and `SERVER_PORT` of EVM simulator correctly
+
+
+
+#### Run client
+
+in `build/bin/experiment`, run this command:
+
+```shell
+python3 evm_simulator.py <portNum> <simulationMode> <startBlockNum> <endBlockNum> <lastKnownBlockNum> <deleteEpoch> <inactivatEpoch> <inactivateThreshold>
+```
+
+
+
 ## Go Ethereum
 
 Official Golang execution layer implementation of the Ethereum protocol.
