@@ -43,9 +43,9 @@ SERVER_IP = "localhost"
 SERVER_PORT = 8994
 
 # simulator options
-deleteDisk = True # delete disk when reset simulator or not
-haveRestoreList = True # have restore list or generate it dynamically
-checkStateValidity = True # check state writes' correctness
+deleteDisk = False # delete disk when reset simulator or not
+haveRestoreList = False # have restore list or generate it dynamically
+checkStateValidity = False # check state writes' correctness
 saveResults = True # save results as a json file
 
 # file paths
