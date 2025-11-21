@@ -1,6 +1,6 @@
-## EVM Simulator
+## EVM-State Simulator
 
-A simulator for replaying Ethereum transactions with various modes
+A simulator for replaying Ethereum transactions with various modes and key schemes
 
 ### Requirements
 
