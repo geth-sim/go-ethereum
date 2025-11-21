@@ -1,3 +1,106 @@
+## State Simulator
+
+A simulator for replaying Ethereum transactions with various key schemes
+
+### Requirements
+
+* Go (version 1.21 or later)
+* Python (version 3.10 or later)
+* MariaDB (version 10.10 or later)
+* PyMySQL (version 1.0.2 or later)
+
+### Prepare data
+
+* [Get ethereum tx data](https://github.com/eth4ne/go-ethereum/tree/TxSubstate_snap)
+
+* [Create database](https://github.com/eth4ne/eth-analysis)
+
+* prepare LevelDB
+
+git clone https://github.com/geth-sim/goleveldb.git at the same directory as go-ethereum/
+
+set branch as 'benchmark', then it measures leveldb stats
+
+set branch as 'noBenchmark2', then it measures nothing
+
+
+
+### How to run simulator
+
+#### Set simulator options
+
+Options in `common/sim_globals.go`:
+
+* `IsArchiveMode`: is archive mode or not
+
+* `IsPathScheme`: is path-based scheme or hash-based scheme
+
+* `EnableSnapshot`: use snapshot while executing transactions or not
+
+* `ReadAllChildNodes`: additionally read all child nodes when hashing trie node (for calculating myHash)
+
+* `AdditionalByteLen`: len of myHash
+
+* `ModifyHashMethod`: name of trie node key scheme
+
+* `LoggingOpcodeStats`: measure opcodes num / time / gas cost or not
+
+* `LoggingReadStats`: measure read stats from geth & leveldb or not
+
+* `IsDoSAttacking`: is DoS attacking or executing blocks normally
+
+Options in `simulator/evmsim/ethereum.go`:
+
+* `useLeveldb`: use LevelDB or MemoryDB
+
+* `leveldbPathPrefix`: prefix of LevelDB's path (leveldbPath = leveldbPathPrefix + ServerPort)
+
+* `totalCacheSize`: size of all caches (leveldbCache + dirtyCache + snapshotCache + trieCache)
+
+* `enabledExpensive`: measure performance metrics or not (same as metrics.EnabledExpensive)
+
+Options in `simulator/statesim/state_simulator.go`:
+
+* `diskSizeMeasureEpoch`: select interval for measuring disk size
+
+* `saveLevelDBStatsEpoch`: select interval for measuring leveldb stats
+
+
+
+#### Run simulator
+
+in `simulator/`, run this command:
+
+```shell
+go run main.go <portNum>
+```
+
+
+
+### How to run client
+
+#### Set options
+
+Options in `build/bin/experiment/db_utils.py`:
+
+* DB options: set `db_host`, `db_user`, `db_pass`, `db_name`, `db_port` correctly to get transaction data from MariaDB
+
+Options in `build/bin/experiment/state_simulator.py`:
+
+* Simulator options: set `SERVER_IP` and `SERVER_PORT` of state simulator correctly
+
+
+
+#### Run client
+
+in `build/bin/experiment`, run this command:
+
+```shell
+python3 state_simulator.py <portNum> <startBlockNum> <endBlockNum> <lastKnownBlockNum>
+```
+
+
+
 ## Go Ethereum
 
 Golang execution layer implementation of the Ethereum protocol.
