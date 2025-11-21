@@ -62,6 +62,7 @@ var hasherPool = sync.Pool{
 func newHasher(parallel bool) *hasher {
 	h := hasherPool.Get().(*hasher)
 	h.parallel = parallel
+	// h.parallel = false // for measure MyHash stats correctly (jmlee)
 	return h
 }
 

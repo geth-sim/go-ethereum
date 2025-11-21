@@ -101,7 +101,7 @@ var (
 
 	ModifyHashes time.Duration // execution time of modifyHash() in the current block
 
-	ModifyHashMethod = "none" // option: JMT, JMT_fixed, PrefixTree, PrefixTree_fixed, HalfPath, PBSS, TH, none
+	ModifyHashMethod = "none" // option: JMT, JMT_fixed, JMT_balanced, PrefixTree, PrefixTree_fixed, PrefixTree_balanced, HalfPath, PBSS, TH, none
 
 	GenesisStateRoot Hash // state root of genesis block
 

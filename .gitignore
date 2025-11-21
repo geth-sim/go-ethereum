@@ -55,3 +55,4 @@ tests/spec-tests/
 
 # evm simulator
 /simulator/logFiles/
+/simulator/additional_node_stats_log.txt
