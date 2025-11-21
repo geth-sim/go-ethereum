@@ -196,6 +196,7 @@ func HasLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) bool {
 // WriteLegacyTrieNode writes the provided legacy trie node to database.
 func WriteLegacyTrieNode(db ethdb.KeyValueWriter, hash common.Hash, node []byte) {
 	// fmt.Println("WriteLegacyTrieNode() -> nodehash:", hash.Hex(), "/", hash.Bytes()) // (jmlee)
+	common.WrittenTrieNodeNum++
 
 	// Fast path: no suffix configured
 	if common.AdditionalByteLen <= 0 {

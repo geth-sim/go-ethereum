@@ -304,6 +304,8 @@ func (h *hasher) hashShortNodeChildren(n *shortNode, tnd common.TrieNodeData) (c
 }
 
 func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (collapsed *fullNode, cached *fullNode) {
+	modifiedChildNum := 0
+	unmodifiedChildNum := 0
 	// Hash the full node's children, caching the newly hashed subtrees
 	cached = n.copy()
 	collapsed = n.copy()
@@ -319,7 +321,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 					childTnd.Path = append(tnd.Path, byte(i))
 					childTnd.Depth = tnd.Depth + 1
 
-					// check if child node is clean or dirty
+					// check if child hash is cached
 					if hash, _ := child.cache(); hash != nil {
 						// this is clean child
 						// fmt.Println("  check child", i, "-> clean")
@@ -336,10 +338,22 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 							}
 						}
 					} else {
-						// this is dirty child
-						// fmt.Println("  check child", i, "-> dirty")
-						// do not need to additionally read this dirty child node since this is not yet included in clean cache or disk (= notFound)
+						// this child hash is not cached, need to compute it
 						collapsed.Children[i], cached.Children[i] = hasher.hash(child, false, childTnd)
+
+						// additionally read this clean child node (to get childHash)
+						if common.ReadAllChildNodes {
+							switch c := child.(type) {
+							case hashNode:
+								common.AdditionalNodeReadFuncCnt++
+								blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
+								if err == nil {
+									// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
+									mustDecodeNode(hash, blob)
+								}
+							}
+						}
+
 					}
 				} else {
 					collapsed.Children[i] = nilValueNode
@@ -357,15 +371,20 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 				childTnd.Path = append(tnd.Path, byte(i))
 				childTnd.Depth = tnd.Depth + 1
 
-				// check if child node is clean or dirty
-				if hash, _ := child.cache(); hash != nil {
+				// check if child hash is cached
+				if hash, isDirty := child.cache(); hash != nil {
 					// this is clean child
+					if isDirty {
+						// this is not called until 10M blocks
+						fmt.Println("I think this is clean node, but its dirty")
+						fmt.Println("  isDirty:", isDirty)
+						os.Exit(1)
+					}
 					// fmt.Println("  check child", i, "-> clean")
 					collapsed.Children[i], cached.Children[i] = hash, child
 
 					// additionally read this clean child node (to get childHash)
 					if common.ReadAllChildNodes {
-						// fmt.Println("    additional read occurs for", common.BytesToHash(hash))
 						common.AdditionalNodeReadFuncCnt++
 						blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(hash))
 						if err == nil {
@@ -373,17 +392,87 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 							mustDecodeNode(hash, blob)
 						}
 					}
+					common.CleanChildNum++
+					unmodifiedChildNum++
 				} else {
-					// this is dirty child
-					// fmt.Println("  check child", i, "-> dirty")
-					// do not need to additionally read this dirty child node since this is not yet included in clean cache or disk (= notFound)
+
+					switch child.(type) {
+
+					case hashNode:
+						// fmt.Println("this is hash node -> clean")
+						common.CleanChildNum++
+						unmodifiedChildNum++
+
+					case valueNode:
+						// fmt.Println("this is value node -> clean or dirty")
+						// valueNode cannot be a full node's child (this is not called until 10M blocks)
+						// just treat this as a nil
+						common.NilChildNum++
+						unmodifiedChildNum++
+						fmt.Println("ERROR: full node can have valueNode as a child")
+						os.Exit(1)
+
+					case *shortNode, *fullNode:
+						// fmt.Println("this is short/full node -> clean or dirty")
+						// this can be a node which is smaller than 32B, so no hash is cached
+						// but this case would be very rare
+						if isDirty {
+							common.DirtyChildNum++
+							modifiedChildNum++
+						} else {
+							// this is clean but cannot be seen as an independent node
+							// so just treat this as a nil
+							// this case occurred 25,077 times until 10M blocks
+							common.NilChildNum++
+							unmodifiedChildNum++
+						}
+
+					default:
+						// this is not called until 10M blocks
+						fmt.Println("ERROR: how child node can be wierd type?")
+						os.Exit(1)
+					}
+
+					// this child hash is not cached, need to compute it
 					collapsed.Children[i], cached.Children[i] = h.hash(child, false, childTnd)
+
+					// additionally read this clean child node (to get childHash)
+					if common.ReadAllChildNodes {
+						switch c := child.(type) {
+						case hashNode:
+							common.AdditionalNodeReadFuncCnt++
+							blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
+							if err == nil {
+								// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
+								mustDecodeNode(hash, blob)
+							}
+						}
+					}
+
 				}
 			} else {
 				collapsed.Children[i] = nilValueNode
+				common.NilChildNum++
+				unmodifiedChildNum++
 			}
 		}
 	}
+
+	if modifiedChildNum + unmodifiedChildNum != 16 {
+		// this is not called until 10M blocks
+		fmt.Println("EROR: modifiedChildNum + unmodifiedChildNum is not 16")
+		fmt.Println("  modifiedChildNum:", modifiedChildNum)
+		fmt.Println("  unmodifiedChildNum:", unmodifiedChildNum)
+		os.Exit(1)
+	}
+	common.ModifiedChildNum[modifiedChildNum]++
+
+	// if modifiedChildNum == 0 {
+	// 	// this can happen, maybe due to read-only account (read the account but it is not updated)
+	// 	fmt.Println("ERROR? modified child num is 0")
+	// 	os.Exit(1)
+	// }
+
 	return collapsed, cached
 }
 
@@ -398,6 +487,14 @@ func (h *hasher) shortnodeToHash(n *shortNode, force bool) node {
 	if len(enc) < 32 && !force {
 		return n // Nodes smaller than 32 bytes are stored inside their parent
 	}
+
+	// fmt.Println("\n\nin shortnodeToHash() -> myhash:", h.hashData(enc))
+	common.HashedShortNodeNum++
+	switch n.Val.(type) {
+	case valueNode:
+		common.HashedLeafNodeNum++
+	}
+	
 	return h.hashData(enc)
 }
 
@@ -410,6 +507,10 @@ func (h *hasher) fullnodeToHash(n *fullNode, force bool) node {
 	if len(enc) < 32 && !force {
 		return n // Nodes smaller than 32 bytes are stored inside their parent
 	}
+
+	// fmt.Println("fullnodeToHash() -> myhash:", h.hashData(enc))
+	common.HashedFullNodeNum++
+
 	return h.hashData(enc)
 }
 

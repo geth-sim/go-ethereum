@@ -86,6 +86,16 @@ var (
 	AdditionalByteLen = 0 // 0 means that MyHash is disabled
 	prng              = mrand.New(mrand.NewSource(time.Now().UnixNano()))
 
+	// measure MyHash stats (for accurate measure, need to set hasher.parallel = false)
+	NilChildNum = 0
+	DirtyChildNum = 0
+	CleanChildNum = 0
+	ModifiedChildNum = make([]int, 17) // ex. ModifiedChildNum[x] = y, meaning that there are y branch nodes in which x child nodes are modified
+	WrittenTrieNodeNum = 0 // this should be HashedFullNodeNum + HashedShortNodeNum
+	HashedFullNodeNum = 0
+	HashedShortNodeNum = 0
+	HashedLeafNodeNum = 0
+
 	// CAUTION: maybe need to remote disk before re-run simulator when modifying nodeHash
 	// CAUTION: modified (root) node hash must not be common.Hash{} (= 0x000...0), this is treated as types.EmptyRootHash
 
@@ -110,6 +120,18 @@ var (
 	IsDoSAttacking    = false
 	CurrentAttackStat = NewAttackStat()
 )
+
+func ClearDirtyStats() {
+	NilChildNum = 0
+	DirtyChildNum = 0
+	CleanChildNum = 0
+	ModifiedChildNum = make([]int, 17) // ex. ModifiedChildNum[x] = y, meaning that there are y branch nodes in which x child nodes are modified
+
+	WrittenTrieNodeNum = 0
+	HashedFullNodeNum = 0
+	HashedShortNodeNum = 0
+	HashedLeafNodeNum = 0
+}
 
 // return simulation mode and its options
 //
