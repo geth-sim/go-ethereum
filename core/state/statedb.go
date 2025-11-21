@@ -1216,7 +1216,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		}
 		// Write any storage changes in the state object to its storage trie
 		common.AddrHashOfCurrentStorageTrie = obj.addrHash
-		set, err := obj.commit()
+		set, err := obj.commit() // flag: update storage trie
 		if err != nil {
 			fmt.Println("statedb.Commit() err 2")
 			return common.Hash{}, err
@@ -1246,7 +1246,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		start = time.Now()
 	}
 	common.HashingStateTrie = true
-	root, set, err := s.trie.Commit(true)
+	root, set, err := s.trie.Commit(true) // flag: update state trie
 	common.HashingStateTrie = false
 	if err != nil {
 		fmt.Println("statedb.Commit() err 4")

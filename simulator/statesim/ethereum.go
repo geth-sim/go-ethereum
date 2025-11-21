@@ -228,6 +228,34 @@ func setDatabase(deleteDisk bool) {
 		common.AppendContractAddrHash = true
 		common.AddrHashPrefixLen = 24
 
+	} else if common.ModifyHashMethod == "JMT_balanced" {
+
+		//
+		// v2 -> state/storage key: version 27 + path 27 + nodeHash 10
+		//
+
+		// version
+		common.VersionLength = 27
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 27
+		common.FixedPathLength = true
+		common.PathPaddingAtEnd = true
+		common.AppendPathFirst = false
+		common.AppendPathLen = false
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 54
+
+		// section byte
+		common.AppendTrieType = false
+
+		// CA's addrHash
+		common.AppendContractAddrHash = false
+		common.AddrHashPrefixLen = 0
+
 	} else if common.ModifyHashMethod == "PrefixTree" {
 
 		//
@@ -245,6 +273,34 @@ func setDatabase(deleteDisk bool) {
 
 		// path
 		common.PathLength = 46
+		common.FixedPathLength = true
+		common.PathPaddingAtEnd = true
+		common.AppendPathFirst = true
+		common.AppendPathLen = false
+		common.LenOfPathLen = 2
+
+		//
+		common.LastPaddingBound = 54
+
+		// section byte
+		common.AppendTrieType = false
+
+		// CA's addrHash
+		common.AppendContractAddrHash = false
+		common.AddrHashPrefixLen = 0
+
+	} else if common.ModifyHashMethod == "PrefixTree_balanced" {
+
+		//
+		// v2: state/storage key: path 27 + version 27 + nodeHash 10 -> okay until 6M block
+		//
+
+		// version
+		common.VersionLength = 27
+		common.EnableVersionPadding = true
+
+		// path
+		common.PathLength = 27
 		common.FixedPathLength = true
 		common.PathPaddingAtEnd = true
 		common.AppendPathFirst = true
