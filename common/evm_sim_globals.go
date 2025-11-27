@@ -62,6 +62,7 @@ var (
 	AddrToKeyInactive = make(map[Address][]Hash) // K_I
 	KeysToDelete      = make([]Hash, 0)          // D_A
 	RestoredKeys      = make([]Hash, 0)          // D_I
+	RestoredAccounts  = make([][]byte, 0)
 
 	InactiveTrieRoot Hash
 	FirstInactiveKey uint64

@@ -501,7 +501,7 @@ func connHandler(conn net.Conn) {
 				if len(restoreAddrs) != 0 || len(accessAddrs) != 0 {
 					start := time.Now()
 					if common.SimulationMode == common.EthaneMode && inactivateEpoch != common.InfiniteEpoch {
-						restoreEthaneAddrsV2(simBlock)
+						restoreEthaneAddrsV3(simBlock)
 					} else if common.SimulationMode == common.EthanosMode {
 						restoreEthanosAddrs(simBlock)
 					}
@@ -541,6 +541,11 @@ func connHandler(conn net.Conn) {
 				if err != nil {
 					fmt.Println("ERROR: state.New() err:", err)
 					os.Exit(1)
+				}
+
+				// restore for ethane
+				if len(common.RestoredAccounts) > 0 {
+					stateDB.RestoreAccounts()
 				}
 
 				//

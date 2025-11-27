@@ -1924,6 +1924,49 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 	return copied
 }
 
+func (s *StateDB) RestoreAccounts() {
+	// fmt.Println("start RestoreAccounts()")
+
+	start := time.Now()
+	_ = start
+
+	for _, enc := range common.RestoredAccounts {
+		addr := common.BytesToAddress(enc) // BytesToAddress() returns last 20 bytes into addr
+		activeKey := common.HexToHash(strconv.FormatUint(common.NextKey, 16))
+		common.NextKey++
+		err := s.trie.Update(activeKey[:], enc)
+		if err != nil {
+			fmt.Println("trie update err:", err)
+			os.Exit(1)
+		}
+
+		// check if this address is not in inactive trie
+		var inactiveAddrKey common.Hash
+		inactiveAddrKeys, exist := common.AddrToKeyInactive[addr]
+		if !exist {
+			// this address does not have inactive account, so no need to restore
+			continue
+		}
+		if len(inactiveAddrKeys) > 1 {
+			fmt.Println("ERROR: this cannot happen in conservative restoration scenario")
+			fmt.Println("  addr:", addr)
+			fmt.Println("  inactiveAddrKeys:", inactiveAddrKeys)
+			fmt.Println("  len(inactiveAddrKeys):", len(inactiveAddrKeys))
+			os.Exit(1)
+		}
+		inactiveAddrKey = inactiveAddrKeys[0]
+	
+		// update K_A, K_I, D_I
+		common.AddrToKeyActive[addr] = activeKey
+		delete(common.AddrToKeyInactive, addr)
+		common.RestoredKeys = append(common.RestoredKeys, inactiveAddrKey)
+		// simBlock.RestoreUpdates += time.Since(start)	
+	
+		// fmt.Println("  success restore -> addr:", addr.Hex())
+	}
+
+}
+
 // delete all previous accounts in active trie for Ethane (jmlee)
 func (s *StateDB) DeletePreviousAccounts() {
 

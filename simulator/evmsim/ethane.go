@@ -371,3 +371,108 @@ func restoreEthaneAddrsV2(simBlock *common.SimBlock) {
 	currentStateRoot = newStateRoot
 	// fmt.Println("finish restoration -> current root:", currentStateRoot.Hex())
 }
+
+func restoreEthaneAddrsV3(simBlock *common.SimBlock) {
+
+	common.RestoredAccounts = make([][]byte, 0)
+
+	// fmt.Println("restoreEthaneAddrsV3() start")
+	// fmt.Println("access addrs:", accessAddrs)
+
+	// activeTrie, err := trie.New(trie.StateTrieID(currentStateRoot), indepTrieDB) // comment out this to reduce useless disk read counts
+	// if err != nil {
+	// 	fmt.Println("cannot open active trie")
+	// 	fmt.Println("  trie.New() error:", err)
+	// 	fmt.Println("  root:", currentStateRoot.Hex())
+	// 	os.Exit(1)
+	// }
+	inactiveTrie, err := trie.New(trie.StateTrieID(common.InactiveTrieRoot), indepTrieDB)
+	if err != nil {
+		fmt.Println("cannot open inactive trie")
+		fmt.Println("  trie.New() error:", err)
+		fmt.Println("  root:", common.InactiveTrieRoot.Hex())
+		os.Exit(1)
+	}
+	// fmt.Println("  active root:", currentStateRoot.Hex())
+	// fmt.Println("  inactive root: ", common.InactiveTrieRoot.Hex())
+
+	// restore addresses
+	restoredNum := 0
+	for _, addr := range accessAddrs {
+		// restoreSuccess := false
+		// addrState := ""
+
+		isValidRestoreTarget := true
+
+		// check if this address is not in inactive trie
+		var inactiveAddrKey common.Hash
+		inactiveAddrKeys, exist := common.AddrToKeyInactive[addr]
+		if !exist {
+			// this address does not have inactive account, so no need to restore
+			continue
+		}
+		if len(inactiveAddrKeys) > 1 {
+			fmt.Println("ERROR: this cannot happen in conservative restoration scenario")
+			fmt.Println("  addr:", addr)
+			fmt.Println("  inactiveAddrKeys:", inactiveAddrKeys)
+			fmt.Println("  len(inactiveAddrKeys):", len(inactiveAddrKeys))
+			os.Exit(1)
+		}
+		inactiveAddrKey = inactiveAddrKeys[0]
+		inactiveEnc, err := inactiveTrie.Get(inactiveAddrKey[:])
+		if len(inactiveEnc) == 0 {
+			fmt.Println("ERROR: inactive key is wrong. there is no account in this inactive key")
+			fmt.Println("  addr:", addr)
+			fmt.Println("  InactiveTrieRoot:", common.InactiveTrieRoot)
+			fmt.Println("  inactiveAddrKey:", inactiveAddrKey.Big())
+			fmt.Println("  inactiveEnc:", inactiveEnc)
+			fmt.Println("  err:", err)
+			os.Exit(1)
+		}
+		if common.BytesToAddress(inactiveEnc) != addr {
+			fmt.Println("ERROR: address is not matched with the address written in the account")
+			fmt.Println("  addr:", addr)
+			fmt.Println("  addr in account:", common.BytesToAddress(inactiveEnc))
+			os.Exit(1)
+		}
+
+		// check if this address is in current trie
+		// start := time.Now()
+		// activeAddrKey, exist := common.AddrToKeyActive[addr]
+		// simBlock.RestoreReads += time.Since(start)
+		// var activeEnc []byte
+		// if exist {
+		// 	activeEnc, err = activeTrie.Get(activeAddrKey[:])
+		// 	if len(activeEnc) != 0 {
+		// 		fmt.Println("ERROR: this address have both active and inactive account")
+		// 		fmt.Println("  addr:", addr)
+		// 		fmt.Println("  active addr key:", activeAddrKey.Big())
+		// 		fmt.Println("  inactive addr key:", inactiveAddrKey.Big())
+		// 		fmt.Println("  activeEnc:", activeEnc)
+		// 		fmt.Println("  inactiveEnc:", inactiveEnc)
+		// 		fmt.Println("  err:", err)
+		// 		os.Exit(1)
+		// 	} else {
+		// 		fmt.Println("ERROR: active key is wrong. there is no account in this active key")
+		// 		fmt.Println("  addr:", addr)
+		// 		fmt.Println("  ActiveTrieRoot:", currentStateRoot)
+		// 		fmt.Println("  activeAddrKey:", activeAddrKey.Big())
+		// 		fmt.Println("  activeEnc:", activeEnc)
+		// 		fmt.Println("  inactiveEnc:", inactiveEnc)
+		// 		fmt.Println("  err:", err)
+		// 		os.Exit(1)
+		// 	}
+		// }
+
+		// restore inactive account
+		if isValidRestoreTarget {
+			common.RestoredAccounts = append(common.RestoredAccounts, inactiveEnc)
+			restoredNum++
+		}
+	}
+
+	//
+	// commit restored accounts
+	//
+	simBlock.AccountRestoreNum = restoredNum
+}
