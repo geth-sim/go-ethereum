@@ -73,7 +73,7 @@ var (
 	prng              = mrand.New(mrand.NewSource(time.Now().UnixNano()))
 
 	// measure MyHash stats (for accurate measure, need to set hasher.parallel = false)
-	MeasureChildStats  = true // option: if this is enabled, parallel trie node hashing is disabled for accurate measure
+	MeasureChildStats  = false // option: if this is enabled, parallel trie node hashing is disabled for accurate measure
 	NilChildNum        = 0
 	DirtyChildNum      = 0
 	CleanChildNum      = 0
