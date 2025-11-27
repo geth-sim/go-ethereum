@@ -836,47 +836,51 @@ func connHandler(conn net.Conn) {
 				// to measure dirty stats per block
 				// common.ClearDirtyStats()
 
-				hashedNodeNum := 0
-				for _, v := range common.ModifiedChildNum {
-					hashedNodeNum += v
-				}
-				if common.HashedFullNodeNum != hashedNodeNum {
-					fmt.Println("ERROR: common.HashedFullNodeNum != hashedNodeNum")
-					fmt.Println("  common.HashedFullNodeNum:", common.HashedFullNodeNum)
-					fmt.Println("  hashedNodeNum:", hashedNodeNum)
-					os.Exit(1)
-				}
-
-				if currentBlockNum % saveLevelDBStatsEpoch == 0 {
-					f, err := os.OpenFile("additional_node_stats_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-					if err != nil {
-						panic(err)
+				if common.MeasureChildStats {
+					// check child stats validity
+					hashedNodeNum := 0
+					for _, v := range common.ModifiedChildNum {
+						hashedNodeNum += v
 					}
-					defer f.Close()
-
-					fmt.Fprintf(f, "\nCurrent Block Number: %d\n"+
-						"HashedFullNodeNum: %d\n"+
-						"  nil   childs: %d -> %.2f%%\n"+
-						"  clean childs: %d -> %.2f%%\n"+
-						"  dirty childs: %d -> %.2f%%\n",
-						currentBlockNum,
-						common.HashedFullNodeNum,
-						common.NilChildNum,   float64(common.NilChildNum)*100/float64(common.HashedFullNodeNum)/16,
-						common.CleanChildNum, float64(common.CleanChildNum)*100/float64(common.HashedFullNodeNum)/16,
-						common.DirtyChildNum, float64(common.DirtyChildNum)*100/float64(common.HashedFullNodeNum)/16,
-					)
-
-					// Log ModifiedChildNum values
-					fmt.Fprintf(f, "common.ModifiedChildNum:\n")
-					for x, y := range common.ModifiedChildNum {
-						percent := float64(y) * 100 / float64(hashedNodeNum)
-						fmt.Fprintf(f, "  [%2d]\t= %6d\t-> %6.2f%%\n", x, y, percent)
+					if common.HashedFullNodeNum != hashedNodeNum {
+						fmt.Println("ERROR: common.HashedFullNodeNum != hashedNodeNum")
+						fmt.Println("  common.HashedFullNodeNum:", common.HashedFullNodeNum)
+						fmt.Println("  hashedNodeNum:", hashedNodeNum)
+						os.Exit(1)
 					}
 
-					fmt.Fprintf(f, "\nWrittenTrieNodeNum: %d\n", common.WrittenTrieNodeNum)					
-					fmt.Fprintf(f, "  HashedLeafNodeNum: %d\n", common.HashedLeafNodeNum)
-					fmt.Fprintf(f, "  HashedShortNodeNum: %d\n", common.HashedShortNodeNum)
-					fmt.Fprintf(f, "  HashedFullNodeNum: %d\n", common.HashedFullNodeNum)
+					// save child stats
+					if currentBlockNum % saveLevelDBStatsEpoch == 0 {
+						f, err := os.OpenFile("additional_node_stats.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+						if err != nil {
+							panic(err)
+						}
+						defer f.Close()
+	
+						fmt.Fprintf(f, "\nCurrent Block Number: %d\n"+
+							"HashedFullNodeNum: %d\n"+
+							"  nil   childs: %d -> %.2f%%\n"+
+							"  clean childs: %d -> %.2f%%\n"+
+							"  dirty childs: %d -> %.2f%%\n",
+							currentBlockNum,
+							common.HashedFullNodeNum,
+							common.NilChildNum,   float64(common.NilChildNum)*100/float64(common.HashedFullNodeNum)/16,
+							common.CleanChildNum, float64(common.CleanChildNum)*100/float64(common.HashedFullNodeNum)/16,
+							common.DirtyChildNum, float64(common.DirtyChildNum)*100/float64(common.HashedFullNodeNum)/16,
+						)
+	
+						// Log ModifiedChildNum values
+						fmt.Fprintf(f, "common.ModifiedChildNum:\n")
+						for x, y := range common.ModifiedChildNum {
+							percent := float64(y) * 100 / float64(hashedNodeNum)
+							fmt.Fprintf(f, "  [%2d]\t= %6d\t-> %6.2f%%\n", x, y, percent)
+						}
+	
+						fmt.Fprintf(f, "\nWrittenTrieNodeNum: %d\n", common.WrittenTrieNodeNum)					
+						fmt.Fprintf(f, "  HashedLeafNodeNum: %d\n", common.HashedLeafNodeNum)
+						fmt.Fprintf(f, "  HashedShortNodeNum: %d\n", common.HashedShortNodeNum)
+						fmt.Fprintf(f, "  HashedFullNodeNum: %d\n", common.HashedFullNodeNum)
+					}
 				}
 
 				// print and save leveldb's read stats (cache hit rate, fake reads, bloom filter)

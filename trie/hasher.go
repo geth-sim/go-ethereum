@@ -62,7 +62,9 @@ var hasherPool = sync.Pool{
 func newHasher(parallel bool) *hasher {
 	h := hasherPool.Get().(*hasher)
 	h.parallel = parallel
-	// h.parallel = false // for measure MyHash stats correctly (jmlee)
+	if common.MeasureChildStats {
+		h.parallel = false // for measure MyHash stats correctly (jmlee)
+	}
 	return h
 }
 
@@ -234,7 +236,7 @@ func modifyHashV5(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeDat
 		if common.ModifyHashMethod != "JMT_fixed" {
 			prefixStr = sectionStr + addrHashStr + prefixStr
 		} else {
-			pathStr = strings.Replace(pathStr, strings.Repeat("0", common.AddrHashPrefixLen), "", 1)
+			pathStr = strings.Replace(pathStr, strings.Repeat("0", len(addrHashStr)), "", 1)
 			prefixStr = blockStr + sectionStr + addrHashStr + pathStr
 		}
 
@@ -265,8 +267,9 @@ func modifyHashV5(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeDat
 		// fmt.Println("  sectionStr:", sectionStr)
 		// fmt.Println("  addrHashStr:", addrHashStr)
 		// fmt.Println("  addrHashHex:", common.AddrHashOfCurrentStorageTrie.Hex())
-		// fmt.Println("  pathStr:", pathStr)
+		// fmt.Println("  pathStr:", pathStr, "-> len:", len(pathStr))
 		// fmt.Println("  pathLen:", pathLen)
+		// fmt.Println("  prefixStr:", prefixStr, "-> len:", len(prefixStr))
 		// fmt.Println("\n  original hash:", hash)
 		// fmt.Println("  newHashHex:", newHashHex)
 
@@ -319,7 +322,9 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 				if child := n.Children[i]; child != nil {
 					// set TrieNodeData
 					var childTnd common.TrieNodeData
-					childTnd.Path = append(tnd.Path, byte(i))
+					childTnd.Path = make([]byte, len(tnd.Path)+1)
+					copy(childTnd.Path, tnd.Path)
+					childTnd.Path[len(tnd.Path)] = byte(i)
 					childTnd.Depth = tnd.Depth + 1
 
 					// check if child hash is cached
@@ -459,7 +464,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 		}
 	}
 
-	if modifiedChildNum + unmodifiedChildNum != 16 {
+	if common.MeasureChildStats && modifiedChildNum+unmodifiedChildNum != 16 {
 		// this is not called until 10M blocks
 		fmt.Println("EROR: modifiedChildNum + unmodifiedChildNum is not 16")
 		fmt.Println("  modifiedChildNum:", modifiedChildNum)
