@@ -1913,7 +1913,7 @@ if __name__ == "__main__":
     # set simulation options
     deleteDisk = False
     haveRestoreList = False
-    checkStateValidity = True
+    checkStateValidity = False
     saveResults = True
     # set simulation mode
     # -> (EVM simulation) 3: Ethereum, 4: Ethane, 5: Ethanos
@@ -1965,6 +1965,7 @@ if __name__ == "__main__":
     client_socket.connect((SERVER_IP, SERVER_PORT))
 
     # optional: merge simblocks for Ethane
+    # setDatabase(False)
     # mergeSimBlocks(10000000, temp_result_save_inteval, deleteEpoch, inactivateEpoch, inactivateCriterion, fromLevel)
     # sys.exit(1)
 

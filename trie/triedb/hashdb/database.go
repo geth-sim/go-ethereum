@@ -226,8 +226,9 @@ func PrintReadStats() {
 // Node retrieves an encoded cached trie node from memory. If it cannot be found
 // cached, the method queries the persistent database for the content.
 func (db *Database) Node(hash common.Hash) ([]byte, error) {
+	common.NodeReadFuncCnt++
 
-	foundPosition := ""
+	foundPosition := "notFound"
 	nodeSize := 0
 	if common.LoggingReadStats {
 		startTime := time.Now()
@@ -235,6 +236,22 @@ func (db *Database) Node(hash common.Hash) ([]byte, error) {
 			saveReadLogs(foundPosition, startTime, int64(nodeSize))
 		}()
 	}
+
+	defer func() {
+		// fmt.Println("    hash:", hash.Hex(), "is found at", foundPosition)
+		switch foundPosition {
+		case "clean":
+			common.CleanHitCnt++
+		case "dirty":
+			common.DirtyHitCnt++
+		case "disk":
+			common.DiskHitCnt++
+		case "notFound":
+			common.NotFoundHitCnt++
+		default:
+			panic("ERROR in db.node()")
+		}
+	}()
 
 	// It doesn't make sense to retrieve the metaroot
 	if hash == (common.Hash{}) {
@@ -255,6 +272,9 @@ func (db *Database) Node(hash common.Hash) ([]byte, error) {
 	dirty := db.dirties[hash]
 	db.lock.RUnlock()
 
+	// Return the cached node if it's found in the dirty set.
+	// The dirty.node field is immutable and safe to read it
+	// even without lock guard.
 	if dirty != nil {
 		foundPosition = "dirty"
 		nodeSize = len(dirty.node)
@@ -277,7 +297,6 @@ func (db *Database) Node(hash common.Hash) ([]byte, error) {
 		return enc, nil
 	}
 
-	foundPosition = "notFound"
 	return nil, errors.New("not found")
 }
 
@@ -552,7 +571,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, uncacher *cleane
 		return err
 	}
 	// If we've reached an optimal batch size, commit and start over
-	rawdb.WriteLegacyTrieNode(batch, hash, node.node)
+	rawdb.WriteLegacyTrieNode(batch, hash, node.node) // flag (jmlee)
 	if batch.ValueSize() >= ethdb.IdealBatchSize {
 		if err := batch.Write(); err != nil {
 			return err

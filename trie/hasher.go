@@ -17,8 +17,12 @@
 package trie
 
 import (
-	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -58,6 +62,9 @@ var hasherPool = sync.Pool{
 func newHasher(parallel bool) *hasher {
 	h := hasherPool.Get().(*hasher)
 	h.parallel = parallel
+	if common.MeasureChildStats {
+		h.parallel = false // for measure MyHash stats correctly (jmlee)
+	}
 	return h
 }
 
@@ -67,7 +74,7 @@ func returnHasherToPool(h *hasher) {
 
 // hash collapses a node down into a hash node, also returning a copy of the
 // original node initialized with the computed hash to replace the original one.
-func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
+func (h *hasher) hash(n node, force bool, tnd common.TrieNodeData) (hashed node, cached node) {
 	// Return the cached hash if it's available
 	if hash, _ := n.cache(); hash != nil {
 		return hash, n
@@ -75,17 +82,19 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 	// Trie not processed yet, walk the children
 	switch n := n.(type) {
 	case *shortNode:
-		collapsed, cached := h.hashShortNodeChildren(n)
+		collapsed, cached := h.hashShortNodeChildren(n, tnd)
 		hashed := h.shortnodeToHash(collapsed, force)
 		// We need to retain the possibly _not_ hashed node, in case it was too
 		// small to be hashed
 		if hn, ok := hashed.(hashNode); ok {
 			cached.flags.hash = hn
 
-			if common.EnableNodePrefixing {
-				modifiedHash := modifyHash(n, hn, CurrentBlockNum)
+			if common.PathLength+common.VersionLength > 0 {
+				start := time.Now()
+				modifiedHash := modifyHashV5(n, hn, CurrentBlockNum, tnd)
 				cached.flags.hash = modifiedHash
 				hashed = modifiedHash
+				common.ModifyHashes += time.Since(start)
 			}
 
 		} else {
@@ -93,15 +102,17 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 		}
 		return hashed, cached
 	case *fullNode:
-		collapsed, cached := h.hashFullNodeChildren(n)
+		collapsed, cached := h.hashFullNodeChildren(n, tnd)
 		hashed = h.fullnodeToHash(collapsed, force)
 		if hn, ok := hashed.(hashNode); ok {
 			cached.flags.hash = hn
 
-			if common.EnableNodePrefixing {
-				modifiedHash := modifyHash(n, hn, CurrentBlockNum)
+			if common.PathLength+common.VersionLength > 0 {
+				start := time.Now()
+				modifiedHash := modifyHashV5(n, hn, CurrentBlockNum, tnd)
 				cached.flags.hash = modifiedHash
 				hashed = modifiedHash
+				common.ModifyHashes += time.Since(start)
 			}
 
 		} else {
@@ -109,22 +120,177 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 		}
 		return hashed, cached
 	default:
-		// Value and hash nodes don't have children so they're left as were
+		// Value and hash nodes don't have children, so they're left as were
 		return n, n
 	}
 }
 
-// modifyHash returns a new hashNode without finding proper nonce (jmlee)
-// just overlap the hash prefix with what we want
-func modifyHash(n node, hash hashNode, blockNum uint64) hashNode {
-	bs := make([]byte, 8)
-	binary.BigEndian.PutUint64(bs, blockNum)
+// (jmlee) modify nodeHash as I want
+func modifyHashV5(n node, hash hashNode, blockNum uint64, tnd common.TrieNodeData) hashNode {
+	// fmt.Println("\nin modifyHashV5()")
+	// fmt.Println("  original path:", tnd.Path, "/ path len:", len(tnd.Path))
+	// fmt.Println("  version:", blockNum)
+	// fmt.Println("  original hash:", hash)
 
-	newHash := hashNode(hash)
-	copy(newHash, hash)
+	if common.HashingStateTrie && common.HashingStorageTrie {
+		fmt.Println("ERROR: HashingStateTrie and HashingStorageTrie could not be both true")
+		fmt.Println("  current block number:", blockNum)
+		os.Exit(1)
+	}
+	if !common.HashingStateTrie && !common.HashingStorageTrie && blockNum != 0 {
+		fmt.Println("ERROR: HashingStateTrie and HashingStorageTrie could not be both false")
+		fmt.Println("  current block number:", blockNum)
+		os.Exit(1)
+	}
+
 	switch n.(type) {
 	case *shortNode, *fullNode:
-		copy(newHash[:common.PrefixLength], bs[8-common.PrefixLength:])
+		//
+		// Convert path to fixed-length hex string (each byte -> single hex digit)
+		//
+
+		// Adjust path length to match PathLength (Trim or Pad)
+		path := tnd.Path
+		pathLen := len(path)
+		if common.SimulationMode == common.EthaneMode {
+			// in Ethane, path is too long, so trim long 0s
+			trimLen := 32
+			if len(path) > trimLen {
+				path = path[trimLen:]
+			}
+		}
+		if len(path) > common.PathLength {
+			path = path[:common.PathLength] // Keep leftmost PathLength elements
+		} else if len(path) < common.PathLength && common.FixedPathLength {
+			missing := common.PathLength - len(path)
+			padding := make([]byte, missing)
+			if common.PathPaddingAtEnd {
+				path = append(path, padding...) // Append padding at the end
+			} else {
+				path = append(padding, path...) // Prepend padding at the front
+			}
+			// fmt.Println("  path padded to:", path)
+		}
+
+		// Convert path bytes (0~15) to hex string using lookup table
+		var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"}
+		pathStr := ""
+		for _, b := range path {
+			pathStr += indices[b] // Faster than fmt.Sprintf or Builder
+		}
+		// fmt.Println("  path prefix:", pathStr)
+
+		//
+		// Convert blockNum to fixed-length hex string
+		//
+		blockStr := ""
+		if common.VersionLength > 0 {
+			if common.EnableVersionPadding {
+				blockStr = fmt.Sprintf("%0*x", common.VersionLength, blockNum)
+			} else {
+				blockStr = fmt.Sprintf("%x", blockNum)
+			}
+		}
+		// fmt.Println("  block prefix:", blockStr)
+
+		//
+		// Merge pathStr and blockStr into a single string
+		//
+		var prefixStr string
+		if common.AppendPathFirst {
+			prefixStr = pathStr + blockStr
+		} else {
+			prefixStr = blockStr + pathStr
+		}
+
+		sectionStr := ""
+		if common.AppendTrieType {
+			if common.HashingStateTrie && !common.HashingStorageTrie {
+				if common.ModifyHashMethod == "HalfPath" && pathLen > 5 {
+					sectionStr = "e"
+				} else {
+					sectionStr = "d"
+				}
+
+				if common.SimulationMode == common.EthaneMode && common.HashingInactiveTrie {
+					sectionStr = "c"
+				}
+			} else if !common.HashingStateTrie && common.HashingStorageTrie {
+				sectionStr = "f"
+			} else {
+				fmt.Println("ERROR: HashingStateTrie and HashingStorageTrie could not be both true")
+				fmt.Println("  HashingStateTrie:", common.HashingStateTrie)
+				fmt.Println("  HashingStorageTrie:", common.HashingStorageTrie)
+				fmt.Println("  current block number:", blockNum)
+				os.Exit(1)
+			}
+		}
+		// fmt.Println("  sectionStr:", sectionStr)
+
+		addrHashStr := ""
+		if common.AppendContractAddrHash {
+			if !common.HashingStateTrie && common.HashingStorageTrie {
+				addrHashHex := common.AddrHashOfCurrentStorageTrie.Hex()[2:]
+				addrHashStr = addrHashHex[:common.AddrHashPrefixLen]
+				// fmt.Println("  common.AddrHashPrefixLen:", common.AddrHashPrefixLen)
+				// fmt.Println("  addrHashHex:", addrHashHex)
+				// fmt.Println("  addrHashStr:", addrHashStr)
+
+				// TODO(jmlee): improve this corner case handling
+				if common.ModifyHashMethod == "PrefixTree_fixed" {
+					prefixStr = strings.Replace(prefixStr, strings.Repeat("0", common.AddrHashPrefixLen), "", 1)
+					// fmt.Println("  0-padding removed: remove ", common.AddrHashPrefixLen, "zeros")
+				}
+			}
+		}
+		// fmt.Println("  addrHashStr:", addrHashStr)
+		if common.ModifyHashMethod != "JMT_fixed" {
+			prefixStr = sectionStr + addrHashStr + prefixStr
+		} else {
+			pathStr = strings.Replace(pathStr, strings.Repeat("0", len(addrHashStr)), "", 1)
+			prefixStr = blockStr + sectionStr + addrHashStr + pathStr
+		}
+
+		if len(prefixStr) < common.LastPaddingBound {
+			prefixStr += strings.Repeat("0", common.LastPaddingBound-len(prefixStr))
+		}
+		// fmt.Println("  prefix str:", prefixStr)
+
+		//
+		// Overwrite the front part of newHashHex with prefixStr
+		//
+		newHashHex := prefixStr + hex.EncodeToString(hash)[len(prefixStr):]
+
+		if common.AppendPathLen {
+			pathLenHex := fmt.Sprintf("%0*x", common.LenOfPathLen, pathLen)
+			newHashHex = newHashHex[:len(newHashHex)-common.LenOfPathLen] + pathLenHex
+		}
+		// fmt.Println("  modified hex hash:", newHashHex)
+		if len(newHashHex) != 64 {
+			fmt.Println("  ERROR: newHashHex len is not 64")
+			fmt.Println("  len(newHashHex):", len(newHashHex))
+			os.Exit(1)
+		}
+
+		// check new hash
+		// fmt.Println("\n<<<<<< modify hash >>>>>>")
+		// fmt.Println("  blockStr:", blockStr)
+		// fmt.Println("  sectionStr:", sectionStr)
+		// fmt.Println("  addrHashStr:", addrHashStr)
+		// fmt.Println("  addrHashHex:", common.AddrHashOfCurrentStorageTrie.Hex())
+		// fmt.Println("  pathStr:", pathStr, "-> len:", len(pathStr))
+		// fmt.Println("  pathLen:", pathLen)
+		// fmt.Println("  original hash:", hash)
+		// fmt.Println("  newHashHex:", newHashHex)
+		// fmt.Println("  node:", n)
+
+		// Convert the modified hex string back to bytes efficiently
+		newHash, err := hex.DecodeString(newHashHex)
+		if err != nil {
+			fmt.Println("  hex.Decode error:", err)
+			return nil
+		}
+
 		return newHash
 	default:
 		return nil
@@ -133,8 +299,7 @@ func modifyHash(n node, hash hashNode, blockNum uint64) hashNode {
 
 // hashShortNodeChildren collapses the short node. The returned collapsed node
 // holds a live reference to the Key, and must not be modified.
-// The cached
-func (h *hasher) hashShortNodeChildren(n *shortNode) (collapsed, cached *shortNode) {
+func (h *hasher) hashShortNodeChildren(n *shortNode, tnd common.TrieNodeData) (collapsed, cached *shortNode) {
 	// Hash the short node's child, caching the newly hashed subtree
 	collapsed, cached = n.copy(), n.copy()
 	// Previously, we did copy this one. We don't seem to need to actually
@@ -144,12 +309,18 @@ func (h *hasher) hashShortNodeChildren(n *shortNode) (collapsed, cached *shortNo
 	// Unless the child is a valuenode or hashnode, hash it
 	switch n.Val.(type) {
 	case *fullNode, *shortNode:
-		collapsed.Val, cached.Val = h.hash(n.Val, false)
+		var childTnd common.TrieNodeData
+		childTnd.Path = append(tnd.Path, n.Key...)
+		childTnd.Depth = tnd.Depth + 1
+		collapsed.Val, cached.Val = h.hash(n.Val, false, childTnd)
 	}
 	return collapsed, cached
 }
 
-func (h *hasher) hashFullNodeChildren(n *fullNode) (collapsed *fullNode, cached *fullNode) {
+func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (collapsed *fullNode, cached *fullNode) {
+	modifiedChildNum := 0
+	unmodifiedChildNum := 0
+	nilChildNum := 0
 	// Hash the full node's children, caching the newly hashed subtrees
 	cached = n.copy()
 	collapsed = n.copy()
@@ -160,7 +331,45 @@ func (h *hasher) hashFullNodeChildren(n *fullNode) (collapsed *fullNode, cached 
 			go func(i int) {
 				hasher := newHasher(false)
 				if child := n.Children[i]; child != nil {
-					collapsed.Children[i], cached.Children[i] = hasher.hash(child, false)
+					// set TrieNodeData
+					var childTnd common.TrieNodeData
+					childTnd.Path = append(tnd.Path, byte(i))
+					childTnd.Depth = tnd.Depth + 1
+
+					// check if child hash is cached
+					if hash, _ := child.cache(); hash != nil {
+						// this is clean child
+						// fmt.Println("  check child", i, "-> clean")
+						collapsed.Children[i], cached.Children[i] = hash, child
+
+						// additionally read this clean child node (to get childHash)
+						if common.ReadAllChildNodes {
+							// fmt.Println("    additional read occurs for", common.BytesToHash(hash))
+							common.AdditionalNodeReadFuncCnt++
+							blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(hash))
+							if err == nil {
+								// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
+								mustDecodeNode(hash, blob)
+							}
+						}
+					} else {
+						// this child hash is not cached, need to compute it
+						collapsed.Children[i], cached.Children[i] = hasher.hash(child, false, childTnd)
+
+						// additionally read this clean child node (to get childHash)
+						if common.ReadAllChildNodes {
+							switch c := child.(type) {
+							case hashNode:
+								common.AdditionalNodeReadFuncCnt++
+								blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
+								if err == nil {
+									// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
+									mustDecodeNode(hash, blob)
+								}
+							}
+						}
+
+					}
 				} else {
 					collapsed.Children[i] = nilValueNode
 				}
@@ -172,12 +381,109 @@ func (h *hasher) hashFullNodeChildren(n *fullNode) (collapsed *fullNode, cached 
 	} else {
 		for i := 0; i < 16; i++ {
 			if child := n.Children[i]; child != nil {
-				collapsed.Children[i], cached.Children[i] = h.hash(child, false)
+				// set TrieNodeData
+				var childTnd common.TrieNodeData
+				childTnd.Path = append(tnd.Path, byte(i))
+				childTnd.Depth = tnd.Depth + 1
+
+				// check if child hash is cached
+				if hash, isDirty := child.cache(); hash != nil {
+					// this is clean child
+					collapsed.Children[i], cached.Children[i] = hash, child
+
+					// additionally read this clean child node (to get childHash)
+					if common.ReadAllChildNodes {
+						common.AdditionalNodeReadFuncCnt++
+						blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(hash))
+						if err == nil {
+							// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
+							mustDecodeNode(hash, blob)
+						}
+					}
+					common.CleanChildNum++
+					unmodifiedChildNum++
+				} else {
+
+					switch child.(type) {
+
+					case hashNode:
+						// fmt.Println("this is hash node -> clean")
+						common.CleanChildNum++
+						unmodifiedChildNum++
+
+					case valueNode:
+						// fmt.Println("this is value node -> clean or dirty")
+						// valueNode cannot be a full node's child (this is not called until 10M blocks)
+						// just treat this as a nil
+						common.NilChildNum++
+						unmodifiedChildNum++
+						fmt.Println("ERROR: full node can have valueNode as a child")
+						os.Exit(1)
+
+					case *shortNode, *fullNode:
+						// fmt.Println("this is short/full node -> clean or dirty")
+						if isDirty {
+							common.DirtyChildNum++
+							modifiedChildNum++
+							common.SpecialDirtyChildCnt++
+						} else {
+							// this is small node than 32B that cannot be seen as an independent node
+							// so just treat this as a nil
+							// this case occurred 25,077 times until 10M blocks
+							common.NilChildNum++
+							unmodifiedChildNum++
+							common.SpecialCleanChildCnt++
+						}
+
+					default:
+						// this is not called until 10M blocks
+						fmt.Println("ERROR: how child node can be wierd type?")
+						os.Exit(1)
+					}
+
+					// this child hash is not cached, need to compute it
+					collapsed.Children[i], cached.Children[i] = h.hash(child, false, childTnd)
+
+					// additionally read this clean child node (to get childHash)
+					if common.ReadAllChildNodes {
+						switch c := child.(type) {
+						case hashNode:
+							common.AdditionalNodeReadFuncCnt++
+							blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
+							if err == nil {
+								// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
+								mustDecodeNode(hash, blob)
+							}
+						}
+					}
+
+				}
 			} else {
 				collapsed.Children[i] = nilValueNode
+
+				// TODO(jmlee): need to distinguish this is nil originally or modified to nil (ex. due to trie.Delete())
+				common.NilChildNum++
+				unmodifiedChildNum++
+				nilChildNum++
 			}
 		}
 	}
+
+	if modifiedChildNum+unmodifiedChildNum != 16 {
+		// this is not called until 10M blocks
+		fmt.Println("EROR: modifiedChildNum + unmodifiedChildNum is not 16")
+		fmt.Println("  modifiedChildNum:", modifiedChildNum)
+		fmt.Println("  unmodifiedChildNum:", unmodifiedChildNum)
+		os.Exit(1)
+	}
+	common.ModifiedChildNum[modifiedChildNum]++
+
+	// if modifiedChildNum == 0 {
+	// 	// this can happen, maybe due to read-only account (read the account but it is not updated) or trie.Delete()
+	// 	fmt.Println("ERROR? modified child num is 0")
+	// 	os.Exit(1)
+	// }
+
 	return collapsed, cached
 }
 
@@ -192,10 +498,18 @@ func (h *hasher) shortnodeToHash(n *shortNode, force bool) node {
 	if len(enc) < 32 && !force {
 		return n // Nodes smaller than 32 bytes are stored inside their parent
 	}
+
+	// fmt.Println("\n\nin shortnodeToHash() -> myhash:", h.hashData(enc))
+	common.HashedShortNodeNum++
+	switch n.Val.(type) {
+	case valueNode:
+		common.HashedLeafNodeNum++
+	}
+
 	return h.hashData(enc)
 }
 
-// shortnodeToHash is used to creates a hashNode from a set of hashNodes, (which
+// fullnodeToHash is used to create a hashNode from a fullNode, (which
 // may contain nil values)
 func (h *hasher) fullnodeToHash(n *fullNode, force bool) node {
 	n.encode(h.encbuf)
@@ -204,6 +518,10 @@ func (h *hasher) fullnodeToHash(n *fullNode, force bool) node {
 	if len(enc) < 32 && !force {
 		return n // Nodes smaller than 32 bytes are stored inside their parent
 	}
+
+	// fmt.Println("fullnodeToHash() -> myhash:", h.hashData(enc))
+	common.HashedFullNodeNum++
+
 	return h.hashData(enc)
 }
 
@@ -232,6 +550,9 @@ func (h *hasher) hashData(data []byte) hashNode {
 	return n
 }
 
+// TODO(jmlee): This function will not work correctly if the nodeHash has been modified with.
+// Keep this in mind and either avoid using this function or take appropriate measures.
+//
 // proofHash is used to construct trie proofs, and returns the 'collapsed'
 // node (for later RLP encoding) as well as the hashed node -- unless the
 // node is smaller than 32 bytes, in which case it will be returned as is.
@@ -239,13 +560,15 @@ func (h *hasher) hashData(data []byte) hashNode {
 func (h *hasher) proofHash(original node) (collapsed, hashed node) {
 	switch n := original.(type) {
 	case *shortNode:
-		sn, _ := h.hashShortNodeChildren(n)
+		var tnd common.TrieNodeData
+		sn, _ := h.hashShortNodeChildren(n, tnd)
 		return sn, h.shortnodeToHash(sn, false)
 	case *fullNode:
-		fn, _ := h.hashFullNodeChildren(n)
+		var tnd common.TrieNodeData
+		fn, _ := h.hashFullNodeChildren(n, tnd)
 		return fn, h.fullnodeToHash(fn, false)
 	default:
-		// Value and hash nodes don't have children so they're left as were
+		// Value and hash nodes don't have children, so they're left as were
 		return n, n
 	}
 }

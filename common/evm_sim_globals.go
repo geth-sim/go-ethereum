@@ -81,7 +81,7 @@ var (
 	// option: test correctness of deletion in inactive trie
 	// check if we can generate the same state root after inactivations and deletion of restored accounts
 	// when we have: only the rightmost inactive path & restore proofs VS entire inactive trie
-	TestInactiveTrieCorrectness = false
+	TestInactiveTrieCorrectness = false // TODO(jmlee): this might not work under new key scheme (which is not H)
 	DeletedZeroHashNodeNum      = 0
 	ZeroHashNodeNum             = 0
 
@@ -99,37 +99,6 @@ var (
 	FlushedTrieNodesNumDueToInsertion  int // TODO(jmlee): this contains storage trie nodes, can we split this stat?
 	FlushedTrieNodesSizeDueToInsertion int // TODO(jmlee): this contains storage trie nodes, can we split this stat?
 )
-
-// return simulation mode and its options
-func GetSimulationTypeName() string {
-	// simulation mode name
-	name := SimulationModeNames[SimulationMode]
-
-	// enable node prefixing: N
-	if EnableNodePrefixing {
-		name += "N"
-	}
-
-	// logging opcode stats: O
-	if LoggingOpcodeStats {
-		name += "O"
-	}
-
-	// TODO(jmlee): implement path-based scheme
-	// enable path-based: P
-
-	// logging read stats: R
-	if LoggingReadStats {
-		name += "R"
-	}
-
-	// enable snapshot: S
-	if EnableSnapshot {
-		name += "S"
-	}
-
-	return name
-}
 
 // store simulation results as a block with performance metrics
 type SimBlock struct {
@@ -215,6 +184,14 @@ type SimBlock struct {
 	InactivateHashes  time.Duration
 	UsedProofNum      int
 	UsedProofUpdtaes  time.Duration
+
+	// hit counts when read trie nodes
+	// CAUTION: need mutex to accurately measure these values (but diff is not that big)
+	CleanHitNum               int
+	DirtyHitNum               int
+	DiskHitNum                int
+	NodeReadFuncCnt           int
+	AdditionalNodeReadFuncCnt int
 }
 
 // buffer to save StateDB's metrics

@@ -186,7 +186,7 @@ func restoreEthaneAddrsV2(simBlock *common.SimBlock) {
 	// fmt.Println("restoreEthaneAddrsV2() start")
 	// fmt.Println("access addrs:", accessAddrs)
 
-	activeTrie, err := trie.New(trie.StateTrieID(currentStateRoot), indepTrieDB)
+	activeTrie, err := trie.New(trie.StateTrieID(currentStateRoot), indepTrieDB) // cause 1 disk read for the root node
 	if err != nil {
 		fmt.Println("cannot open active trie")
 		fmt.Println("  trie.New() error:", err)
@@ -346,7 +346,9 @@ func restoreEthaneAddrsV2(simBlock *common.SimBlock) {
 
 	// flush to trie.Database (memdb) (i.e., trie.Commit() & trieDB.Update())
 	start := time.Now()
+	common.HashingStateTrie = true
 	newStateRoot, nodes, err := activeTrie.Commit(true)
+	common.HashingStateTrie = false
 	if err != nil {
 		fmt.Println("at restoreEthaneAddrs(): trie.Commit() failed")
 		fmt.Println("  err:", err)

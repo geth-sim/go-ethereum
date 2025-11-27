@@ -632,7 +632,7 @@ func (s *StateDB) updateStateObject(obj *stateObject) {
 		}
 
 		// update account trie
-		// fmt.Println("at updateStateObject() -> addr:", addr, " / newAddrKey:", obj.newAddrKey.Big(), "/ originAddrKey:", obj.originAddrKey.Big())
+		// fmt.Println("at updateStateObject() -> addr:", addr, " / newAddrKey:", obj.newAddrKey.Big(), "/ originAddrKey:", obj.originAddrKey.Big(), "/ balance:", obj.data.Balance, "/ data:", data)
 		if err := s.trie.Update(obj.newAddrKey[:], data); err != nil {
 			s.setError(fmt.Errorf("updateStateObject (%x) error: %v", addr[:], err))
 			fmt.Println("at updateStateObject() -> s.trie.Update() err:", err)
@@ -1412,7 +1412,105 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountHashes += time.Since(start) }(time.Now())
 	}
-	return s.trie.Hash()
+
+	// (jmlee)
+	common.HashingStateTrie = true
+	root := s.trie.Hash()
+	common.HashingStateTrie = false
+	// fmt.Println("in intermediateRoot:", root.Hex())
+	return root
+}
+
+// IntermediateRootWithoutHashing is same as IntermediateRoot but does not trie.Hash() at the last (jmlee)
+func (s *StateDB) IntermediateRootWithoutHashing(deleteEmptyObjects bool) {
+	// Finalise all the dirty storage states and write them into the tries
+	s.Finalise(deleteEmptyObjects)
+
+	// If there was a trie prefetcher operating, it gets aborted and irrevocably
+	// modified after we start retrieving tries. Remove it from the statedb after
+	// this round of use.
+	//
+	// This is weird pre-byzantium since the first tx runs with a prefetcher and
+	// the remainder without, but pre-byzantium even the initial prefetcher is
+	// useless, so no sleep lost.
+	prefetcher := s.prefetcher
+	if s.prefetcher != nil {
+		defer func() {
+			s.prefetcher.close()
+			s.prefetcher = nil
+		}()
+	}
+	// Although naively it makes sense to retrieve the account trie and then do
+	// the contract storage and account updates sequentially, that short circuits
+	// the account prefetcher. Instead, let's process all the storage updates
+	// first, giving the account prefetches just a few more milliseconds of time
+	// to pull useful data from disk.
+	for addr := range s.stateObjectsPending {
+		if obj := s.stateObjects[addr]; !obj.deleted {
+			obj.updateRoot()
+		}
+	}
+	// Now we're about to start to write changes to the trie. The trie is so far
+	// _untouched_. We can check with the prefetcher, if it can give us a trie
+	// which has the same root, but also has some content loaded into it.
+	if prefetcher != nil {
+		if trie := prefetcher.trie(common.Hash{}, s.originalRoot); trie != nil {
+			s.trie = trie
+		}
+	}
+	usedAddrs := make([][]byte, 0, len(s.stateObjectsPending))
+	if common.SimulationMode == common.EthaneMode {
+		// TODO(jmlee): think better way for determinism
+		// sort pending addresses (for deterministic, since golang's map iteration is not ordered)
+		var addrs []string
+		for addr := range s.stateObjectsPending {
+			addrs = append(addrs, addr.Hex())
+		}
+		sort.Strings(addrs)
+
+		for _, addrStr := range addrs {
+			addr := common.HexToAddress(addrStr)
+			if obj := s.stateObjects[addr]; obj.deleted {
+				s.deleteStateObject(obj)
+				s.AccountDeleted += 1
+			} else {
+				s.updateStateObject(obj)
+				s.AccountUpdated += 1
+			}
+			usedAddrs = append(usedAddrs, common.CopyBytes(addr[:])) // Copy needed for closure
+		}
+	} else {
+		// original code
+		// (Ethereum and Ethanos do not need to care about operation order since result is same)
+		for addr := range s.stateObjectsPending {
+			if obj := s.stateObjects[addr]; obj.deleted {
+				s.deleteStateObject(obj)
+				s.AccountDeleted += 1
+			} else {
+				s.updateStateObject(obj)
+				s.AccountUpdated += 1
+			}
+			usedAddrs = append(usedAddrs, common.CopyBytes(addr[:])) // Copy needed for closure
+		}
+	}
+
+	if prefetcher != nil {
+		prefetcher.used(common.Hash{}, s.originalRoot, usedAddrs)
+	}
+	if len(s.stateObjectsPending) > 0 {
+		s.stateObjectsPending = make(map[common.Address]struct{})
+	}
+
+	// Track the amount of time wasted on hashing the account trie
+	// if metrics.EnabledExpensive {
+	// 	defer func(start time.Time) { s.AccountHashes += time.Since(start) }(time.Now())
+	// }
+
+	// (jmlee)
+	// common.HashingStateTrie = true
+	// root := s.trie.Hash()
+	// common.HashingStateTrie = false
+	// return root
 }
 
 // SetTxContext sets the current transaction hash and index which are
@@ -1593,6 +1691,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		return common.Hash{}, err
 	}
 	// Handle all state updates afterwards
+	common.HashingStorageTrie = true
 	for addr := range s.stateObjectsDirty {
 		obj := s.stateObjects[addr]
 		if obj.deleted {
@@ -1604,7 +1703,8 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 			obj.dirtyCode = false
 		}
 		// Write any storage changes in the state object to its storage trie
-		set, err := obj.commit()
+		common.AddrHashOfCurrentStorageTrie = obj.addrHash
+		set, err := obj.commit() // flag: update storage trie
 		if err != nil {
 			return common.Hash{}, err
 		}
@@ -1620,6 +1720,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 			storageTrieNodesDeleted += deleted
 		}
 	}
+	common.HashingStorageTrie = false
 	if codeWriter.ValueSize() > 0 {
 		if err := codeWriter.Write(); err != nil {
 			log.Crit("Failed to commit dirty codes", "error", err)
@@ -1630,7 +1731,9 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 	if metrics.EnabledExpensive {
 		start = time.Now()
 	}
-	root, set, err := s.trie.Commit(true)
+	common.HashingStateTrie = true
+	root, set, err := s.trie.Commit(true) // flag: update state trie
+	common.HashingStateTrie = false
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -1894,11 +1997,14 @@ func (s *StateDB) DeletePreviousAccounts() {
 		s.DeleteNum += deleteNum
 	}
 
-	start = time.Now()
-	s.trie.Hash()
-	if metrics.EnabledExpensive {
-		s.DeleteHashes += time.Since(start)
-	}
+	// this is not needed, delete for accurate child stats
+	// start = time.Now()
+	// common.HashingStateTrie = true
+	// s.trie.Hash() // flag: update state trie
+	// common.HashingStateTrie = false
+	// if metrics.EnabledExpensive {
+	// 	s.DeleteHashes += time.Since(start)
+	// }
 
 	fmt.Println("DeletePreviousAccounts() -> deleted accounts num:", deleteNum)
 }
@@ -1907,6 +2013,7 @@ func (s *StateDB) DeletePreviousAccounts() {
 // also removes restored inactive accounts
 // returns disk commit time and last used inactive key
 func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.Hash) (time.Duration, uint64) {
+	// fmt.Println("InactivateOldAccounts() executed")
 
 	// ready for correctness check for deletion in light inactive trie
 	memdb := rawdb.NewMemoryDatabase()
@@ -1964,6 +2071,10 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	for {
 		// try to delete the leftmost account (whose key should be less than last key to check)
 		err, enc := s.trie.TryDeleteLeft(lastKeyToCheck[:])
+		if err != nil {
+			fmt.Println("TryDeleteLeft error:", err)
+			os.Exit(1)
+		}
 		if enc != nil {
 			// success delete, then move the account to inactive trie
 			// insert inactive account to right
@@ -2129,8 +2240,11 @@ func (s *StateDB) InactivateOldAccounts(blockNum uint64, lastKeyToCheck common.H
 	}
 
 	start = time.Now()
-	s.trie.Hash()
-	s.subTrie.Hash()
+	common.HashingStateTrie = true
+	common.HashingInactiveTrie = true
+	s.subTrie.Hash() // flag: update state trie (inactive trie)
+	common.HashingInactiveTrie = false
+	common.HashingStateTrie = false
 	if metrics.EnabledExpensive {
 		s.InactivateHashes += time.Since(start)
 	}
@@ -2172,7 +2286,7 @@ func (s *StateDB) GetFirstActiveKey() *big.Int {
 }
 
 func (s *StateDB) GetFirstInactiveKey() *big.Int {
-	fmt.Println("GetFirstInactiveKey() -> root:", s.subTrie.Hash().Hex())
+	// fmt.Println("GetFirstInactiveKey() -> root:", s.subTrie.Hash().Hex())
 	return s.subTrie.GetFirstOrLastKey(true)
 }
 
@@ -2181,7 +2295,7 @@ func (s *StateDB) GetLastActiveKey() *big.Int {
 }
 
 func (s *StateDB) GetLastInactiveKey() *big.Int {
-	fmt.Println("GetLastInactiveKey() -> root:", s.subTrie.Hash().Hex())
+	// fmt.Println("GetLastInactiveKey() -> root:", s.subTrie.Hash().Hex())
 	return s.subTrie.GetFirstOrLastKey(false)
 }
 

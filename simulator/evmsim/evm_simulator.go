@@ -62,6 +62,7 @@ var (
 	diskSizeMeasureEpoch   = uint64(100000)
 	diskSizeMeasureCnt     = 0
 	diskSizeMeasureElapsed time.Duration
+	saveLevelDBStatsEpoch  = uint64(100000)
 )
 
 func connHandler(conn net.Conn) {
@@ -387,7 +388,7 @@ func connHandler(conn net.Conn) {
 
 			case "insertAccessList":
 				// get params
-				fmt.Println("execute insertAccessList()")
+				// fmt.Println("execute insertAccessList()")
 
 				// receive large msg
 				if params[len(params)-1] != "@" {
@@ -431,7 +432,7 @@ func connHandler(conn net.Conn) {
 				// get params
 				// fmt.Println("execute executeTransactionArgsList()")
 
-				if common.EnableNodePrefixing {
+				if common.VersionLength+common.PathLength > 0 {
 					trie.SetCurrentBlockNum(currentBlockNum)
 				}
 
@@ -439,23 +440,25 @@ func connHandler(conn net.Conn) {
 					fmt.Println("set genesis state")
 
 					// set (mainnet's) genesis state
-					mainnetGenesis := core.DefaultGenesisBlock()
-					mainnetGenesis.ToBlock().Hash()
-					generatedBlockHeader, _ := mainnetGenesis.Commit(frdiskdb, mainTrieDB)
-
-					// check validity
-					genesisHeader := myChainContext.GetHeader(common.Hash{}, currentBlockNum)
-					if common.SimulationMode == common.EthereumMode && generatedBlockHeader.Root() != genesisHeader.Root {
-						if !common.EnableNodePrefixing {
-							fmt.Println("genesis state is wrong")
-							fmt.Println("generated state root:\t", generatedBlockHeader.Root().Hex())
-							fmt.Println("genesis header.Root:\t", genesisHeader.Root.Hex())
-							os.Exit(1)
-						}
+					_, _, err := core.SetupGenesisBlock(frdiskdb, mainTrieDB, nil)
+					if err != nil {
+						fmt.Println("SetupGenesisBlock() err:", err)
+						os.Exit(1)
 					}
 
+					// check validity
+					// genesisHeader := myChainContext.GetHeader(common.Hash{}, currentBlockNum)
+					// if common.SimulationMode == common.EthereumMode && generatedBlockHeader.Root() != genesisHeader.Root {
+					// 	if !common.EnableNodePrefixing {
+					// 		fmt.Println("genesis state is wrong")
+					// 		fmt.Println("generated state root:\t", generatedBlockHeader.Root().Hex())
+					// 		fmt.Println("genesis header.Root:\t", genesisHeader.Root.Hex())
+					// 		os.Exit(1)
+					// 	}
+					// }
+
 					// prepare next block
-					currentStateRoot = generatedBlockHeader.Root()
+					currentStateRoot = common.GenesisStateRoot
 					fmt.Println("set genesis state complete -> currentStateRoot:", currentStateRoot.Hex())
 
 					blockNumStr := fmt.Sprintf("%08d", currentBlockNum)
@@ -467,6 +470,10 @@ func connHandler(conn net.Conn) {
 
 					currentBlockNum++
 					response = []byte("success")
+
+					// ignore stats in genesis block
+					common.ClearDirtyStats()
+
 					break
 				}
 
@@ -490,6 +497,7 @@ func connHandler(conn net.Conn) {
 				//
 				// restore inactive accounts which will be needed in this block
 				//
+				// fmt.Println("start restore")
 				if len(restoreAddrs) != 0 || len(accessAddrs) != 0 {
 					start := time.Now()
 					if common.SimulationMode == common.EthaneMode && inactivateEpoch != common.InfiniteEpoch {
@@ -503,6 +511,7 @@ func connHandler(conn net.Conn) {
 				//
 				// set stateDB
 				//
+				// fmt.Println("set stateDB")
 				blockStartTime := time.Now()
 				if common.EnableSnapshot && mySnaps == nil {
 					mySnapconfig := snapshot.Config{
@@ -537,6 +546,7 @@ func connHandler(conn net.Conn) {
 				//
 				// execute transactionArgsList
 				//
+				// fmt.Println("execute transactionsArgsList")
 				stateDB.StartPrefetcher("miner") // when snapshot is enabled, read needed trie nodes at background
 				gasPool := new(core.GasPool).AddGas(header.GasLimit)
 				deleteEmptyObjects := myChainConfig.IsEIP158(header.Number) // blockNum > 2,675,000
@@ -585,6 +595,7 @@ func connHandler(conn net.Conn) {
 				//
 				// block reward + uncle rewards
 				//
+				// fmt.Println("block reward + uncle rewards")
 				// Select the correct block reward based on chain progression
 				blockReward := ethash.FrontierBlockReward
 				if myChainConfig.IsByzantium(header.Number) {
@@ -619,6 +630,7 @@ func connHandler(conn net.Conn) {
 				//
 				// delete previous accounts or inactivate old accounts for Ethane
 				//
+				// fmt.Println("delete previous account or inactivate old accounts for Ethane")
 				if common.SimulationMode == common.EthaneMode {
 					// fmt.Println("blockNum:", currentBlockNum, "/ deleteEpoch:", deleteEpoch)
 
@@ -638,7 +650,8 @@ func connHandler(conn net.Conn) {
 							common.TouchedTrieNodesSizeDueToDeletion = 0
 						}
 
-						stateDB.IntermediateRoot(deleteEmptyObjects) // apply remained modifications before deletion
+						// stateDB.IntermediateRoot(deleteEmptyObjects) // apply remained modifications before deletion
+						stateDB.IntermediateRootWithoutHashing(deleteEmptyObjects) // to avoid unnecessary trie.Hash()
 						stateDB.DeletePreviousAccounts()
 
 						// detailed measurement for KeysToDelete stats
@@ -679,6 +692,7 @@ func connHandler(conn net.Conn) {
 				//
 				// commit final state
 				//
+				// fmt.Println("commit final state")
 				// TODO(jmlee): update bloom filter for Ethanos
 				currentStateRoot, err = stateDB.Commit(currentBlockNum, deleteEmptyObjects)
 				if err != nil {
@@ -696,7 +710,7 @@ func connHandler(conn net.Conn) {
 					// fmt.Println("substateroot:", common.InactiveTrieRoot.Hex())
 
 					// save leftmost key of active trie
-					simBlock.FirstActiveKey = stateDB.GetFirstActiveKey().Uint64()
+					// simBlock.FirstActiveKey = stateDB.GetFirstActiveKey().Uint64() // this accesses trie node's dirty cache (even in case of archive mode)
 					// save last written key (checkpointKey)
 					simBlock.LastActiveKey = common.NextKey - 1
 					simBlock.FirstInactiveKey = common.FirstInactiveKey
@@ -714,12 +728,12 @@ func connHandler(conn net.Conn) {
 				}
 
 				// flush to disk
-				fmt.Println("start trie.Database.Commit()")
+				// fmt.Println("start trie.Database.Commit()")
 				start := time.Now()
 				stateDB.Database().TrieDB().Commit(currentStateRoot, false)
 				if metrics.EnabledExpensive {
 					diskCommits := time.Since(start)
-					fmt.Println("  trie.Database.Commit() time:", diskCommits.Nanoseconds(), "ns")
+					// fmt.Println("  trie.Database.Commit() time:", diskCommits.Nanoseconds(), "ns")
 					simBlock.DiskCommits += diskCommits
 
 					// collect performance metrics
@@ -729,16 +743,28 @@ func connHandler(conn net.Conn) {
 
 				// check results
 				simBlock.BlockExecuteTime = time.Since(blockStartTime)
-				fmt.Println("<<< execution success for block", header.Number, ">>>", "( mode:", common.GetSimulationTypeName(), "/ port:", ServerPort, ")")
-				fmt.Println("  current state root:", currentStateRoot.Hex())
-				fmt.Println("  sub state root:", simBlock.SubStateRoot.Hex())
-				fmt.Println("  mainnet header.Root:", header.Root.Hex())
-				fmt.Println("  executed txArgs len:", len(txArgsList))
 				totalRestoreNum += simBlock.AccountRestoreNum
-				fmt.Println("  restored accounts num:", simBlock.AccountRestoreNum, "/ total:", totalRestoreNum)
+				fmt.Println(
+					"<<< execution success for block", header.Number, ">>>",
+					"( mode:", common.GetSimulationTypeName(), common.ModifyHashMethod, "/ port:", ServerPort, ")",
+					"\n  current state root: ", currentStateRoot.Hex(),
+					"\n  sub state root:     ", simBlock.SubStateRoot.Hex(),
+					"\n  mainnet header.Root:", header.Root.Hex(),
+					"\n  executed txArgs len:", len(txArgsList),
+					"\n  restored accounts num:", simBlock.AccountRestoreNum, "/ total:", totalRestoreNum,
+				)
 				if common.SimulationMode == common.EthereumMode && currentStateRoot != header.Root {
-					fmt.Println("ERR: executeTransactionArgsList: Ethereum state not match")
-					if !common.EnableNodePrefixing {
+					// fmt.Println("ERR: executeTransactionArgsList: Ethereum state not match")
+					// if !common.EnableNodePrefixing {
+					// 	os.Exit(1)
+					// }
+
+					if common.VersionLength+common.PathLength == 0 {
+						fmt.Println("ERR: executeTransactionArgsList: Ethereum state not match !!!")
+						fmt.Println("  current state root:", currentStateRoot.Hex())
+						fmt.Println("  sub state root:", simBlock.SubStateRoot.Hex())
+						fmt.Println("  mainnet header.Root:", header.Root.Hex())
+						fmt.Println("  executed txArgs len:", len(txArgsList))
 						os.Exit(1)
 					}
 				}
@@ -792,6 +818,73 @@ func connHandler(conn net.Conn) {
 						common.SaveOpcodeStat(currentBlockNum)
 						common.ResetOpcodeStat(currentBlockNum + 1)
 					}
+				}
+
+				fmt.Println("NodeReadFuncCnt:", common.NodeReadFuncCnt, "/ AdditionalNodeReadFuncCnt:", common.AdditionalNodeReadFuncCnt,
+					"\n  clean cache:", common.CleanHitCnt,
+					"\n  dirty cache:", common.DirtyHitCnt,
+					"\n  disk       :", common.DiskHitCnt,
+					"\n  not found:", common.NotFoundHitCnt)
+				// fmt.Println("\nspecial clean:", common.SpecialCleanChildCnt)
+				// fmt.Println("special dirty:", common.SpecialDirtyChildCnt)
+				// if common.SpecialCleanChildCnt != 0 {
+				// 	os.Exit(1)
+				// }
+
+				simBlock.NodeReadFuncCnt = common.NodeReadFuncCnt
+				simBlock.AdditionalNodeReadFuncCnt = common.AdditionalNodeReadFuncCnt
+				simBlock.CleanHitNum = common.CleanHitCnt
+				simBlock.DirtyHitNum = common.DirtyHitCnt
+				simBlock.DiskHitNum = common.DiskHitCnt
+
+				//
+				// additional node stats
+				//
+
+				// to measure dirty stats per block
+				// common.ClearDirtyStats()
+
+				hashedNodeNum := 0
+				for _, v := range common.ModifiedChildNum {
+					hashedNodeNum += v
+				}
+				if common.HashedFullNodeNum != hashedNodeNum {
+					fmt.Println("ERROR: common.HashedFullNodeNum != hashedNodeNum")
+					fmt.Println("  common.HashedFullNodeNum:", common.HashedFullNodeNum)
+					fmt.Println("  hashedNodeNum:", hashedNodeNum)
+					os.Exit(1)
+				}
+
+				if currentBlockNum % saveLevelDBStatsEpoch == 0 {
+					f, err := os.OpenFile("additional_node_stats_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+					if err != nil {
+						panic(err)
+					}
+					defer f.Close()
+
+					fmt.Fprintf(f, "\nCurrent Block Number: %d\n"+
+						"HashedFullNodeNum: %d\n"+
+						"  nil   childs: %d -> %.2f%%\n"+
+						"  clean childs: %d -> %.2f%%\n"+
+						"  dirty childs: %d -> %.2f%%\n",
+						currentBlockNum,
+						common.HashedFullNodeNum,
+						common.NilChildNum,   float64(common.NilChildNum)*100/float64(common.HashedFullNodeNum)/16,
+						common.CleanChildNum, float64(common.CleanChildNum)*100/float64(common.HashedFullNodeNum)/16,
+						common.DirtyChildNum, float64(common.DirtyChildNum)*100/float64(common.HashedFullNodeNum)/16,
+					)
+
+					// Log ModifiedChildNum values
+					fmt.Fprintf(f, "common.ModifiedChildNum:\n")
+					for x, y := range common.ModifiedChildNum {
+						percent := float64(y) * 100 / float64(hashedNodeNum)
+						fmt.Fprintf(f, "  [%2d]\t= %6d\t-> %6.2f%%\n", x, y, percent)
+					}
+
+					fmt.Fprintf(f, "\nWrittenTrieNodeNum: %d\n", common.WrittenTrieNodeNum)					
+					fmt.Fprintf(f, "  HashedLeafNodeNum: %d\n", common.HashedLeafNodeNum)
+					fmt.Fprintf(f, "  HashedShortNodeNum: %d\n", common.HashedShortNodeNum)
+					fmt.Fprintf(f, "  HashedFullNodeNum: %d\n", common.HashedFullNodeNum)
 				}
 
 				//
@@ -1842,6 +1935,10 @@ func StartEvmSimulator() {
 
 	// wait for requests
 	for {
+		fmt.Println("  Modify Hash method:", common.ModifyHashMethod)
+		fmt.Println("  ReadAllChildNodes:", common.ReadAllChildNodes)
+		fmt.Println("  MyHash length:", common.AdditionalByteLen)
+		fmt.Println("  MeasureChildStats:", common.MeasureChildStats)
 		fmt.Println("\nwait for requests...")
 		conn, err := listener.Accept()
 		if err != nil {

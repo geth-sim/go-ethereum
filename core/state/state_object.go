@@ -379,7 +379,10 @@ func (s *stateObject) updateRoot() {
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.db.StorageHashes += time.Since(start) }(time.Now())
 	}
+	common.HashingStorageTrie = true
+	common.AddrHashOfCurrentStorageTrie = s.addrHash
 	s.data.Root = tr.Hash()
+	common.HashingStorageTrie = false
 }
 
 // commit returns the changes made in storage trie and updates the account data.

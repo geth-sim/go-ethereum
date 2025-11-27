@@ -159,7 +159,9 @@ func HasLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) bool {
 
 // WriteLegacyTrieNode writes the provided legacy trie node to database.
 func WriteLegacyTrieNode(db ethdb.KeyValueWriter, hash common.Hash, node []byte) {
+	common.WrittenTrieNodeNum++
 	// fmt.Println("WriteLegacyTrieNode:", hash.Hex())
+
 	if common.FlushAfterDeletion {
 		common.FlushedTrieNodesNumDueToDeletion += 1
 		common.FlushedTrieNodesSizeDueToDeletion += len(node)
@@ -168,7 +170,25 @@ func WriteLegacyTrieNode(db ethdb.KeyValueWriter, hash common.Hash, node []byte)
 		common.FlushedTrieNodesSizeDueToInsertion += len(node)
 	}
 
-	if err := db.Put(hash.Bytes(), node); err != nil {
+	// Fast path: no suffix configured
+	if common.AdditionalByteLen <= 0 {
+		// fmt.Println("[WRITE] writing without suffix, body length:", len(node))
+		if err := db.Put(hash.Bytes(), node); err != nil {
+			log.Crit("Failed to store legacy trie node", "err", err)
+		}
+		return
+	}
+
+	// Append MyHash at suffix
+	randSuffix := common.FastRandomBytes(common.AdditionalByteLen)
+	out := make([]byte, 0, len(node)+common.AdditionalByteLen)
+	out = append(out, node...)
+	out = append(out, randSuffix...)
+	// fmt.Println("[WRITE] body length:", len(node))
+	// fmt.Println("[WRITE] suffix length:", len(randSuffix))
+	// fmt.Printf("[WRITE] suffix hex: %x\n", randSuffix)
+	// fmt.Println("[WRITE] total stored length:", len(out))
+	if err := db.Put(hash.Bytes(), out); err != nil {
 		log.Crit("Failed to store legacy trie node", "err", err)
 	}
 }

@@ -630,6 +630,9 @@ func (t *Trie) resolveAndTrack(n hashNode, prefix []byte) (node, error) {
 // Hash returns the root hash of the trie. It does not write to the
 // database and can be used even if the trie doesn't have one.
 func (t *Trie) Hash() common.Hash {
+	// if CurrentBlockNum > 5 {
+	// 	defer fmt.Println("t.root at block", CurrentBlockNum, ":", t.root) // for debugging
+	// }
 	hash, cached := t.hashRoot()
 	t.root = cached
 	return common.BytesToHash(hash.(hashNode))
@@ -692,9 +695,20 @@ func (t *Trie) hashRoot() (node, node) {
 		returnHasherToPool(h)
 		t.unhashed = 0
 	}()
-	hashed, cached := h.hash(t.root, true)
+
+	// original
+	// hashed, cached := h.hash(t.root, true)
+	// new to modify nodeHash as I want (jmlee)
+	var tnd common.TrieNodeData
+	CurrentTrie = t
+	hashed, cached := h.hash(t.root, true, tnd)
+
 	return hashed, cached
 }
+
+var (
+	CurrentTrie *Trie // this trie is being hashed (jmlee)
+)
 
 // Reset drops the referenced root node and cleans all internal state.
 func (t *Trie) Reset() {
