@@ -627,13 +627,28 @@ func RandomBytes(length int) ([]byte, error) {
 	return b, nil
 }
 
-// FastRandomBytes returns a pseudo-random slice of given length.
-// It uses math/rand with a pre-seeded PRNG, which is much faster than crypto/rand,
-// but not cryptographically secure. Suitable when only "random-looking" data is needed.
-func FastRandomBytes(length int) []byte {
-	b := make([]byte, length)
-	for i := 0; i < length; i++ {
-		b[i] = byte(prng.Intn(256))
+func FillRandomBytes(b []byte) {
+	i := 0
+	n := len(b)
+
+	for ; i+8 <= n; i += 8 {
+		r := prng.Uint64()
+		b[i+0] = byte(r)
+		b[i+1] = byte(r >> 8)
+		b[i+2] = byte(r >> 16)
+		b[i+3] = byte(r >> 24)
+		b[i+4] = byte(r >> 32)
+		b[i+5] = byte(r >> 40)
+		b[i+6] = byte(r >> 48)
+		b[i+7] = byte(r >> 56)
 	}
-	return b
+
+	// tail
+	if i < n {
+		r := prng.Uint64()
+		for j := i; j < n; j++ {
+			b[j] = byte(r)
+			r >>= 8
+		}
+	}
 }

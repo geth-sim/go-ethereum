@@ -18,7 +18,9 @@ package rawdb
 
 import (
 	"fmt"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -171,18 +173,6 @@ func ReadLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) []byte {
 		return nil
 	}
 	// fmt.Println("\n[READ] raw from db:", len(data), "bytes")
-
-	// Strip fixed-length suffix (MyHash) if present
-	if common.AdditionalByteLen > 0 && len(data) >= common.AdditionalByteLen {
-		body := data[:len(data)-common.AdditionalByteLen]
-		suffix := data[len(data)-common.AdditionalByteLen:]
-		_ = suffix
-		// fmt.Println("[READ] body length:", len(body))
-		// fmt.Println("[READ] suffix length:", len(suffix))
-		// fmt.Printf("[READ] suffix hex: %x\n", suffix)
-		return body
-	}
-
 	// fmt.Println("[READ] no suffix found, return as-is")
 	return data
 }
@@ -193,13 +183,15 @@ func HasLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) bool {
 	return ok
 }
 
+var scratch = make([]byte, 2000)
+
 // WriteLegacyTrieNode writes the provided legacy trie node to database.
 func WriteLegacyTrieNode(db ethdb.KeyValueWriter, hash common.Hash, node []byte) {
-	// fmt.Println("WriteLegacyTrieNode() -> nodehash:", hash.Hex(), "/", hash.Bytes()) // (jmlee)
 	common.WrittenTrieNodeNum++
+	// fmt.Println("WriteLegacyTrieNode:", hash.Hex())
 
 	// Fast path: no suffix configured
-	if common.AdditionalByteLen <= 0 {
+	if common.AdditionalByteLen <= 0 && common.DiskSizeMultiplier <= 1.0 {
 		// fmt.Println("[WRITE] writing without suffix, body length:", len(node))
 		if err := db.Put(hash.Bytes(), node); err != nil {
 			log.Crit("Failed to store legacy trie node", "err", err)
@@ -207,11 +199,34 @@ func WriteLegacyTrieNode(db ethdb.KeyValueWriter, hash common.Hash, node []byte)
 		return
 	}
 
-	// Append MyHash at suffix
-	randSuffix := common.FastRandomBytes(common.AdditionalByteLen)
-	out := make([]byte, 0, len(node)+common.AdditionalByteLen)
-	out = append(out, node...)
-	out = append(out, randSuffix...)
+	//
+	// append random bytes suffix
+	//
+	start := time.Now()
+
+	if common.AdditionalByteLen > 0 && common.DiskSizeMultiplier > 1.0 {
+		fmt.Println("ERROR: wrong setting")
+		fmt.Println("  common.AdditionalByteLen:", common.AdditionalByteLen)
+		fmt.Println("  common.DiskSizeMultiplier:", common.DiskSizeMultiplier)
+		os.Exit(1)
+	}
+
+	randomSuffixLen := common.AdditionalByteLen
+	if common.DiskSizeMultiplier > 1.0 {
+		randomSuffixLen = int(float64(len(node)) * (common.DiskSizeMultiplier - 1.0))
+	}
+	totalLen := len(node) + randomSuffixLen
+
+	if cap(scratch) < totalLen {
+		scratch = make([]byte, totalLen)
+	}
+	out := scratch[:totalLen]
+	copy(out, node)
+	common.FillRandomBytes(out[len(node):])
+
+	elapsed := time.Since(start)
+	common.RandomBytesGenerates += elapsed
+
 	// fmt.Println("[WRITE] body length:", len(node))
 	// fmt.Println("[WRITE] suffix length:", len(randSuffix))
 	// fmt.Printf("[WRITE] suffix hex: %x\n", randSuffix)
