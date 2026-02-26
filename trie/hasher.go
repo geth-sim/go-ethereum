@@ -89,6 +89,11 @@ func (h *hasher) hash(n node, force bool, tnd common.TrieNodeData) (hashed node,
 		if hn, ok := hashed.(hashNode); ok {
 			cached.flags.hash = hn
 
+			if common.ReadAllChildNodes {
+				// this node's hash was (re)computed and is representable as hashNode
+				refreshAdditionalReadMarkerIfPresent(tnd.Path)
+			}
+
 			if common.PathLength+common.VersionLength > 0 {
 				start := time.Now()
 				modifiedHash := modifyHashV5(n, hn, CurrentBlockNum, tnd)
@@ -106,6 +111,11 @@ func (h *hasher) hash(n node, force bool, tnd common.TrieNodeData) (hashed node,
 		hashed = h.fullnodeToHash(collapsed, force)
 		if hn, ok := hashed.(hashNode); ok {
 			cached.flags.hash = hn
+
+			if common.ReadAllChildNodes {
+				// this node's hash was (re)computed and is representable as hashNode
+				refreshAdditionalReadMarkerIfPresent(tnd.Path)
+			}
 
 			if common.PathLength+common.VersionLength > 0 {
 				start := time.Now()
@@ -334,13 +344,14 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 						collapsed.Children[i], cached.Children[i] = hash, child
 
 						// additionally read this clean child node (to get childHash)
-						if common.ReadAllChildNodes {
+						if common.ReadAllChildNodes && shouldAdditionalReadChild(childTnd.Path) {
 							// fmt.Println("    additional read occurs for", common.BytesToHash(hash))
 							common.AdditionalNodeReadFuncCnt++
 							blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(hash))
 							if err == nil {
 								// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
 								mustDecodeNode(hash, blob)
+								markAdditionalReadDone(childTnd.Path)
 							}
 						}
 					} else {
@@ -351,11 +362,14 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 						if common.ReadAllChildNodes {
 							switch c := child.(type) {
 							case hashNode:
-								common.AdditionalNodeReadFuncCnt++
-								blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
-								if err == nil {
-									// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
-									mustDecodeNode(hash, blob)
+								if shouldAdditionalReadChild(childTnd.Path) {
+									common.AdditionalNodeReadFuncCnt++
+									blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
+									if err == nil {
+										// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
+										mustDecodeNode(c, blob)
+										markAdditionalReadDone(childTnd.Path)
+									}
 								}
 							}
 						}
@@ -390,12 +404,13 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 					collapsed.Children[i], cached.Children[i] = hash, child
 
 					// additionally read this clean child node (to get childHash)
-					if common.ReadAllChildNodes {
+					if common.ReadAllChildNodes && shouldAdditionalReadChild(childTnd.Path) {
 						common.AdditionalNodeReadFuncCnt++
 						blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(hash))
 						if err == nil {
 							// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
 							mustDecodeNode(hash, blob)
+							markAdditionalReadDone(childTnd.Path)
 						}
 					}
 					common.CleanChildNum++
@@ -446,11 +461,14 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 					if common.ReadAllChildNodes {
 						switch c := child.(type) {
 						case hashNode:
-							common.AdditionalNodeReadFuncCnt++
-							blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
-							if err == nil {
-								// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
-								mustDecodeNode(hash, blob)
+							if shouldAdditionalReadChild(childTnd.Path) {
+								common.AdditionalNodeReadFuncCnt++
+								blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
+								if err == nil {
+									// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
+									mustDecodeNode(c, blob)
+									markAdditionalReadDone(childTnd.Path)
+								}
 							}
 						}
 					}
@@ -458,6 +476,8 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 				}
 			} else {
 				collapsed.Children[i] = nilValueNode
+
+				// TODO(jmlee): need to distinguish this is nil originally or modified to nil (ex. due to trie.Delete())
 				common.NilChildNum++
 				unmodifiedChildNum++
 			}

@@ -74,6 +74,10 @@ var (
 	AddrHashOfCurrentStorageTrie Hash    // addrHash of CA whose storage trie is being hashed
 
 	ReadAllChildNodes         = false // option: read all full node's child nodes when hashing
+	// Cache sizes in MBs. 0 disables cache.
+	UseUnifiedCache = true // option: use unified cache or split caches (state / storage)
+	StateChildReadCacheSize = 0
+	StorageChildReadCacheSize = 0
 	NodeReadFuncCnt           = 0     // # of trie.hashdb.Database.node() execution
 	AdditionalNodeReadFuncCnt = 0     // # of trie.hashdb.Database.node() execution due to ReadAllChildNodes option
 	// detailed read stats (these might not be 100% accurate due to goroutines)
@@ -84,6 +88,8 @@ var (
 
 	// implement MyHash (as PrefixTree)
 	AdditionalByteLen = 0 // 0 means that MyHash is disabled
+	DiskSizeMultiplier = 1.0 // 1.0 means do not append random bytes to trie nodes
+	RandomBytesGenerates time.Duration
 	prng              = mrand.New(mrand.NewSource(time.Now().UnixNano()))
 
 	// measure MyHash stats (for accurate measure, need to set hasher.parallel = false)
@@ -256,6 +262,14 @@ type SimBlock struct {
 	DiskHitNum                int
 	NodeReadFuncCnt           int
 	AdditionalNodeReadFuncCnt int
+
+	RandomBytesGenerates time.Duration
+
+	// myHash cache stats
+	ChildReadStateHit    uint64
+	ChildReadStateMiss   uint64
+	ChildReadStorageHit  uint64
+	ChildReadStorageMiss uint64
 }
 
 // buffer to save StateDB's metrics

@@ -896,6 +896,9 @@ func connHandler(conn net.Conn) {
 				simBlock.ModifyHashes = common.ModifyHashes
 				common.ModifyHashes = 0
 
+				simBlock.RandomBytesGenerates = common.RandomBytesGenerates
+				common.RandomBytesGenerates = 0
+
 				// save leveldb stats
 				if currentBlockNum%saveLevelDBStatsEpoch == 0 {
 					leveldbStat := new(common.LevelDBStat)
@@ -934,6 +937,13 @@ func connHandler(conn net.Conn) {
 
 					common.LevelDBStats[blockNumStr] = leveldbStat
 				}
+
+				// save myHash cache stats				
+				simBlock.ChildReadStateHit = trie.ChildReadStateHit
+				simBlock.ChildReadStateMiss = trie.ChildReadStateMiss
+				simBlock.ChildReadStorageHit = trie.ChildReadStorageHit
+				simBlock.ChildReadStorageMiss = trie.ChildReadStorageMiss
+				// trie.PrintChildReadCacheStats()
 
 				//
 				// cleanups
@@ -1615,6 +1625,10 @@ func StartStateSimulator() {
 		fmt.Println("  Modify Hash method:", common.ModifyHashMethod)
 		fmt.Println("  ReadAllChildNodes:", common.ReadAllChildNodes)
 		fmt.Println("  MyHash length:", common.AdditionalByteLen)
+		fmt.Println("  DiskSizeMultiplier:", common.DiskSizeMultiplier)
+		fmt.Println("  MeasureChildStats:", common.MeasureChildStats)
+		fmt.Println("  StateChildReadCacheSize:", common.StateChildReadCacheSize)
+		fmt.Println("  StorageChildReadCacheSize:", common.StorageChildReadCacheSize)
 		fmt.Println("\nwait for requests...")
 		conn, err := listener.Accept()
 		if err != nil {
