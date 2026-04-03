@@ -102,6 +102,11 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		if readonly {
 			options.ReadOnly = true
 		}
+
+		// set compression option (Snappy is enabled by default)
+		if !common.EnableSnappy {
+			options.Compression = opt.NoCompression
+		}
 	})
 }
 

@@ -92,6 +92,8 @@ var (
 	RandomBytesGenerates time.Duration
 	prng              = mrand.New(mrand.NewSource(time.Now().UnixNano()))
 
+	EnableSnappy = true // option: enable Snappy compression in LevelDB or not
+
 	// measure MyHash stats (for accurate measure, need to set hasher.parallel = false)
 	MeasureChildStats  = false // option: if this is enabled, parallel trie node hashing is disabled for accurate measure
 	NilChildNum = 0
