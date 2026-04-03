@@ -37,6 +37,10 @@ var (
 
 func SetCurrentBlockNum(blockNum uint64) {
 	CurrentBlockNum = blockNum
+
+	// for testing TH's performance when version num is rotating
+	// CurrentBlockNum %= 65535
+	// CurrentBlockNum %= 1048575
 }
 
 // hasher is a type used for the trie Hash operation. A hasher has some
