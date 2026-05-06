@@ -3,6 +3,7 @@ package trie
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
@@ -89,18 +90,18 @@ func shouldAdditionalReadChild(childPath []byte) bool {
 	if cache.Get(nil, key) != nil {
 		// hit
 		if common.HashingStateTrie && !common.HashingStorageTrie {
-			ChildReadStateHit++
+			addChildReadStat(&ChildReadStateHit)
 		} else if !common.HashingStateTrie && common.HashingStorageTrie {
-			ChildReadStorageHit++
+			addChildReadStat(&ChildReadStorageHit)
 		}
 		return false // already read => skip
 	}
 
 	// miss
 	if common.HashingStateTrie && !common.HashingStorageTrie {
-		ChildReadStateMiss++
+		addChildReadStat(&ChildReadStateMiss)
 	} else if !common.HashingStateTrie && common.HashingStorageTrie {
-		ChildReadStorageMiss++
+		addChildReadStat(&ChildReadStorageMiss)
 	}
 	return true
 }
@@ -150,7 +151,29 @@ var (
 	ChildReadStorageMiss uint64
 )
 
+func addChildReadStat(counter *uint64) {
+	if common.MeasureReadStats {
+		atomic.AddUint64(counter, 1)
+		return
+	}
+	*counter++
+}
+
+func loadChildReadStat(counter *uint64) uint64 {
+	if common.MeasureReadStats {
+		return atomic.LoadUint64(counter)
+	}
+	return *counter
+}
+
 func ResetChildReadCacheStats() {
+	if common.MeasureReadStats {
+		atomic.StoreUint64(&ChildReadStateHit, 0)
+		atomic.StoreUint64(&ChildReadStateMiss, 0)
+		atomic.StoreUint64(&ChildReadStorageHit, 0)
+		atomic.StoreUint64(&ChildReadStorageMiss, 0)
+		return
+	}
 	ChildReadStateHit, ChildReadStateMiss = 0, 0
 	ChildReadStorageHit, ChildReadStorageMiss = 0, 0
 }
@@ -168,12 +191,17 @@ func PrintChildReadCacheStats() {
 		fmt.Printf("  %s: hit=%d miss=%d hitRate=%.2f%% total=%d\n", name, hit, miss, rate, total)
 	}
 
+	stateHit := loadChildReadStat(&ChildReadStateHit)
+	stateMiss := loadChildReadStat(&ChildReadStateMiss)
+	storageHit := loadChildReadStat(&ChildReadStorageHit)
+	storageMiss := loadChildReadStat(&ChildReadStorageMiss)
+
 	if common.UseUnifiedCache {
-		uHit := ChildReadStateHit + ChildReadStorageHit
-		uMiss := ChildReadStateMiss + ChildReadStorageMiss
+		uHit := stateHit + storageHit
+		uMiss := stateMiss + storageMiss
 		printOne("unified", uHit, uMiss)
 	}
 
-	printOne("state", ChildReadStateHit, ChildReadStateMiss)
-	printOne("storage", ChildReadStorageHit, ChildReadStorageMiss)
+	printOne("state", stateHit, stateMiss)
+	printOne("storage", storageHit, storageMiss)
 }

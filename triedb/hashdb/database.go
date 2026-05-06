@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -204,7 +205,7 @@ func ResetCacheStat() (map[string]int64, map[string]int64, map[string]int64, int
 	nodeReadSizes = make(map[string]int64)
 
 	// hashDB does not have diff layer's depth sum, just return 0
-	return nums, times, sizes, 0	
+	return nums, times, sizes, 0
 }
 
 func saveReadLogs(position string, startTime time.Time, nodeSize int64) {
@@ -241,7 +242,11 @@ func PrintReadStats() {
 // node retrieves an encoded cached trie node from memory. If it cannot be found
 // cached, the method queries the persistent database for the content.
 func (db *Database) node(hash common.Hash) ([]byte, error) {
-	common.NodeReadFuncCnt++
+	if common.MeasureReadStats {
+		atomic.AddUint64(&common.NodeReadFuncCnt, 1)
+	} else {
+		common.NodeReadFuncCnt++
+	}
 
 	foundPosition := "notFound"
 	nodeSize := 0
@@ -256,13 +261,29 @@ func (db *Database) node(hash common.Hash) ([]byte, error) {
 		// fmt.Println("    hash:", hash.Hex(), "is found at", foundPosition)
 		switch foundPosition {
 		case "clean":
-			common.CleanHitCnt++
+			if common.MeasureReadStats {
+				atomic.AddUint64(&common.CleanHitCnt, 1)
+			} else {
+				common.CleanHitCnt++
+			}
 		case "dirty":
-			common.DirtyHitCnt++
+			if common.MeasureReadStats {
+				atomic.AddUint64(&common.DirtyHitCnt, 1)
+			} else {
+				common.DirtyHitCnt++
+			}
 		case "disk":
-			common.DiskHitCnt++
+			if common.MeasureReadStats {
+				atomic.AddUint64(&common.DiskHitCnt, 1)
+			} else {
+				common.DiskHitCnt++
+			}
 		case "notFound":
-			common.NotFoundHitCnt++
+			if common.MeasureReadStats {
+				atomic.AddUint64(&common.NotFoundHitCnt, 1)
+			} else {
+				common.NotFoundHitCnt++
+			}
 		default:
 			panic("ERROR in db.node()")
 		}

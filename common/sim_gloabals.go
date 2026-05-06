@@ -73,37 +73,39 @@ var (
 	HashingStorageTrie           = false // flag: now hashing storage tries
 	AddrHashOfCurrentStorageTrie Hash    // addrHash of CA whose storage trie is being hashed
 
-	ReadAllChildNodes         = false // option: read all full node's child nodes when hashing
+	ReadAllChildNodes = false // option: read all full node's child nodes when hashing
 	// Cache sizes in MBs. 0 disables cache.
-	UseUnifiedCache = true // option: use unified cache or split caches (state / storage)
-	StateChildReadCacheSize = 0
+	UseUnifiedCache           = true // option: use unified cache or split caches (state / storage)
+	StateChildReadCacheSize   = 0
 	StorageChildReadCacheSize = 0
-	NodeReadFuncCnt           = 0     // # of trie.hashdb.Database.node() execution
-	AdditionalNodeReadFuncCnt = 0     // # of trie.hashdb.Database.node() execution due to ReadAllChildNodes option
+
+	MeasureReadStats                 = false // option: measure node read stats & myHash stats accurately (disable parallel hashing)
+	NodeReadFuncCnt           uint64 = 0     // # of trie.hashdb.Database.node() execution
+	AdditionalNodeReadFuncCnt uint64 = 0     // # of trie.hashdb.Database.node() execution due to ReadAllChildNodes option
 	// detailed read stats (these might not be 100% accurate due to goroutines)
-	CleanHitCnt    = 0
-	DirtyHitCnt    = 0 // this should be 0 in archive mode
-	DiskHitCnt     = 0
-	NotFoundHitCnt = 0 // this should be 0
+	CleanHitCnt    uint64 = 0
+	DirtyHitCnt    uint64 = 0 // this should be 0 in archive mode
+	DiskHitCnt     uint64 = 0
+	NotFoundHitCnt uint64 = 0 // this should be 0
 
 	// implement MyHash (as PrefixTree)
-	AdditionalByteLen = 0 // 0 means that MyHash is disabled
-	DiskSizeMultiplier = 1.0 // 1.0 means do not append random bytes to trie nodes
+	AdditionalByteLen    = 0   // 0 means that MyHash is disabled
+	DiskSizeMultiplier   = 1.0 // 1.0 means do not append random bytes to trie nodes
 	RandomBytesGenerates time.Duration
-	prng              = mrand.New(mrand.NewSource(time.Now().UnixNano()))
+	prng                 = mrand.New(mrand.NewSource(time.Now().UnixNano()))
 
 	EnableSnappy = true // option: enable Snappy compression in LevelDB or not
 
 	// measure MyHash stats (for accurate measure, need to set hasher.parallel = false)
 	MeasureChildStats  = false // option: if this is enabled, parallel trie node hashing is disabled for accurate measure
-	NilChildNum = 0
-	DirtyChildNum = 0
-	CleanChildNum = 0
-	ModifiedChildNum = make([]int, 17) // ex. ModifiedChildNum[x] = y, meaning that there are y branch nodes in which x child nodes are modified
-	WrittenTrieNodeNum = 0 // this should be HashedFullNodeNum + HashedShortNodeNum
-	HashedFullNodeNum = 0
+	NilChildNum        = 0
+	DirtyChildNum      = 0
+	CleanChildNum      = 0
+	ModifiedChildNum   = make([]int, 17) // ex. ModifiedChildNum[x] = y, meaning that there are y branch nodes in which x child nodes are modified
+	WrittenTrieNodeNum = 0               // this should be HashedFullNodeNum + HashedShortNodeNum
+	HashedFullNodeNum  = 0
 	HashedShortNodeNum = 0
-	HashedLeafNodeNum = 0
+	HashedLeafNodeNum  = 0
 
 	// CAUTION: maybe need to remote disk before re-run simulator when modifying nodeHash
 	// CAUTION: modified (root) node hash must not be common.Hash{} (= 0x000...0), this is treated as types.EmptyRootHash

@@ -22,6 +22,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -66,10 +67,18 @@ var hasherPool = sync.Pool{
 func newHasher(parallel bool) *hasher {
 	h := hasherPool.Get().(*hasher)
 	h.parallel = parallel
-	if common.MeasureChildStats {
+	if common.MeasureChildStats || common.MeasureReadStats {
 		h.parallel = false // for measure MyHash stats correctly (jmlee)
 	}
 	return h
+}
+
+func addAdditionalNodeRead() {
+	if common.MeasureReadStats {
+		atomic.AddUint64(&common.AdditionalNodeReadFuncCnt, 1)
+		return
+	}
+	common.AdditionalNodeReadFuncCnt++
 }
 
 func returnHasherToPool(h *hasher) {
@@ -350,7 +359,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 						// additionally read this clean child node (to get childHash)
 						if common.ReadAllChildNodes && shouldAdditionalReadChild(childTnd.Path) {
 							// fmt.Println("    additional read occurs for", common.BytesToHash(hash))
-							common.AdditionalNodeReadFuncCnt++
+							addAdditionalNodeRead()
 							blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(hash))
 							if err == nil {
 								// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
@@ -367,7 +376,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 							switch c := child.(type) {
 							case hashNode:
 								if shouldAdditionalReadChild(childTnd.Path) {
-									common.AdditionalNodeReadFuncCnt++
+									addAdditionalNodeRead()
 									blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
 									if err == nil {
 										// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
@@ -409,7 +418,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 
 					// additionally read this clean child node (to get childHash)
 					if common.ReadAllChildNodes && shouldAdditionalReadChild(childTnd.Path) {
-						common.AdditionalNodeReadFuncCnt++
+						addAdditionalNodeRead()
 						blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(hash))
 						if err == nil {
 							// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
@@ -466,7 +475,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 						switch c := child.(type) {
 						case hashNode:
 							if shouldAdditionalReadChild(childTnd.Path) {
-								common.AdditionalNodeReadFuncCnt++
+								addAdditionalNodeRead()
 								blob, err := CurrentTrie.reader.node(childTnd.Path, common.BytesToHash(c))
 								if err == nil {
 									// CurrentTrie.tracer.onRead(childTnd.Path, blob) // comment out this to avoid current map write issue
@@ -524,7 +533,7 @@ func (h *hasher) shortnodeToHash(n *shortNode, force bool) node {
 	case valueNode:
 		common.HashedLeafNodeNum++
 	}
-	
+
 	return h.hashData(enc)
 }
 

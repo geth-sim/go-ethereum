@@ -532,7 +532,7 @@ func connHandler(conn net.Conn) {
 				// sourceBalance.SetFromDecimal("99999999999999")
 				// stateDB.AddBalance(sourceAddr, sourceBalance)
 				// gasPool.AddGas(uint64(30000000))
-				
+
 				deleteEmptyObjects := myChainConfig.IsEIP158(header.Number) // blockNum > 2,675,000
 				for txIndex, txArg := range txArgsList {
 
@@ -817,17 +817,33 @@ func connHandler(conn net.Conn) {
 					}
 				}
 
-				fmt.Println("NodeReadFuncCnt:", common.NodeReadFuncCnt, "/ AdditionalNodeReadFuncCnt:", common.AdditionalNodeReadFuncCnt,
-					"\n  clean:", common.CleanHitCnt,
-					"\n  dirty:", common.DirtyHitCnt,
-					"\n  disk:", common.DiskHitCnt,
-					"\n  not found:", common.NotFoundHitCnt)
+				nodeReadFuncCnt := common.NodeReadFuncCnt
+				additionalNodeReadFuncCnt := common.AdditionalNodeReadFuncCnt
+				cleanHitCnt := common.CleanHitCnt
+				dirtyHitCnt := common.DirtyHitCnt
+				diskHitCnt := common.DiskHitCnt
+				notFoundHitCnt := common.NotFoundHitCnt
+				if common.MeasureReadStats {
+					nodeReadFuncCnt = atomic.LoadUint64(&common.NodeReadFuncCnt)
+					additionalNodeReadFuncCnt = atomic.LoadUint64(&common.AdditionalNodeReadFuncCnt)
+					cleanHitCnt = atomic.LoadUint64(&common.CleanHitCnt)
+					dirtyHitCnt = atomic.LoadUint64(&common.DirtyHitCnt)
+					diskHitCnt = atomic.LoadUint64(&common.DiskHitCnt)
+					notFoundHitCnt = atomic.LoadUint64(&common.NotFoundHitCnt)
+					_ = notFoundHitCnt
+				}
 
-				simBlock.NodeReadFuncCnt = common.NodeReadFuncCnt
-				simBlock.AdditionalNodeReadFuncCnt = common.AdditionalNodeReadFuncCnt
-				simBlock.CleanHitNum = common.CleanHitCnt
-				simBlock.DirtyHitNum = common.DirtyHitCnt
-				simBlock.DiskHitNum = common.DiskHitCnt
+				// fmt.Println("NodeReadFuncCnt:", nodeReadFuncCnt, "/ AdditionalNodeReadFuncCnt:", additionalNodeReadFuncCnt,
+				// 	"\n  clean:", cleanHitCnt,
+				// 	"\n  dirty:", dirtyHitCnt,
+				// 	"\n  disk:", diskHitCnt,
+				// 	"\n  not found:", notFoundHitCnt)
+
+				simBlock.NodeReadFuncCnt = int(nodeReadFuncCnt)
+				simBlock.AdditionalNodeReadFuncCnt = int(additionalNodeReadFuncCnt)
+				simBlock.CleanHitNum = int(cleanHitCnt)
+				simBlock.DirtyHitNum = int(dirtyHitCnt)
+				simBlock.DiskHitNum = int(diskHitCnt)
 
 				//
 				// additional node stats
@@ -850,13 +866,13 @@ func connHandler(conn net.Conn) {
 					}
 
 					// save child stats
-					if currentBlockNum % saveLevelDBStatsEpoch == 0 {
+					if currentBlockNum%saveLevelDBStatsEpoch == 0 {
 						f, err := os.OpenFile("additional_node_stats.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 						if err != nil {
 							panic(err)
 						}
 						defer f.Close()
-	
+
 						fmt.Fprintf(f, "\nCurrent Block Number: %d\n"+
 							"HashedFullNodeNum: %d\n"+
 							"  nil   childs: %d -> %.2f%%\n"+
@@ -864,19 +880,19 @@ func connHandler(conn net.Conn) {
 							"  dirty childs: %d -> %.2f%%\n",
 							currentBlockNum,
 							common.HashedFullNodeNum,
-							common.NilChildNum,   float64(common.NilChildNum)*100/float64(common.HashedFullNodeNum)/16,
+							common.NilChildNum, float64(common.NilChildNum)*100/float64(common.HashedFullNodeNum)/16,
 							common.CleanChildNum, float64(common.CleanChildNum)*100/float64(common.HashedFullNodeNum)/16,
 							common.DirtyChildNum, float64(common.DirtyChildNum)*100/float64(common.HashedFullNodeNum)/16,
 						)
-	
+
 						// Log ModifiedChildNum values
 						fmt.Fprintf(f, "common.ModifiedChildNum:\n")
 						for x, y := range common.ModifiedChildNum {
 							percent := float64(y) * 100 / float64(hashedNodeNum)
 							fmt.Fprintf(f, "  [%2d]\t= %6d\t-> %6.2f%%\n", x, y, percent)
 						}
-	
-						fmt.Fprintf(f, "\nWrittenTrieNodeNum: %d\n", common.WrittenTrieNodeNum)					
+
+						fmt.Fprintf(f, "\nWrittenTrieNodeNum: %d\n", common.WrittenTrieNodeNum)
 						fmt.Fprintf(f, "  HashedLeafNodeNum: %d\n", common.HashedLeafNodeNum)
 						fmt.Fprintf(f, "  HashedShortNodeNum: %d\n", common.HashedShortNodeNum)
 						fmt.Fprintf(f, "  HashedFullNodeNum: %d\n", common.HashedFullNodeNum)
@@ -938,11 +954,17 @@ func connHandler(conn net.Conn) {
 					common.LevelDBStats[blockNumStr] = leveldbStat
 				}
 
-				// save myHash cache stats				
+				// save myHash cache stats
 				simBlock.ChildReadStateHit = trie.ChildReadStateHit
 				simBlock.ChildReadStateMiss = trie.ChildReadStateMiss
 				simBlock.ChildReadStorageHit = trie.ChildReadStorageHit
 				simBlock.ChildReadStorageMiss = trie.ChildReadStorageMiss
+				if common.MeasureReadStats {
+					simBlock.ChildReadStateHit = atomic.LoadUint64(&trie.ChildReadStateHit)
+					simBlock.ChildReadStateMiss = atomic.LoadUint64(&trie.ChildReadStateMiss)
+					simBlock.ChildReadStorageHit = atomic.LoadUint64(&trie.ChildReadStorageHit)
+					simBlock.ChildReadStorageMiss = atomic.LoadUint64(&trie.ChildReadStorageMiss)
+				}
 				// trie.PrintChildReadCacheStats()
 
 				//
@@ -1626,9 +1648,11 @@ func StartStateSimulator() {
 		fmt.Println("  ReadAllChildNodes:", common.ReadAllChildNodes)
 		fmt.Println("  MyHash length:", common.AdditionalByteLen)
 		fmt.Println("  DiskSizeMultiplier:", common.DiskSizeMultiplier)
+		fmt.Println("  MeasureReadStats:", common.MeasureReadStats)
 		fmt.Println("  MeasureChildStats:", common.MeasureChildStats)
 		fmt.Println("  StateChildReadCacheSize:", common.StateChildReadCacheSize)
 		fmt.Println("  StorageChildReadCacheSize:", common.StorageChildReadCacheSize)
+		fmt.Println("  EnableSnappy:", common.EnableSnappy)
 		fmt.Println("\nwait for requests...")
 		conn, err := listener.Accept()
 		if err != nil {
