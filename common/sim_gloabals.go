@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+const (
+	DatabaseCompressionSnappy = "snappy"
+	DatabaseCompressionZstd   = "zstd"
+	DatabaseCompressionNone   = "none"
+)
+
 var (
 	// temp vars for test
 	TruncateFromTailCnt = 0
@@ -94,7 +100,8 @@ var (
 	RandomBytesGenerates time.Duration
 	prng                 = mrand.New(mrand.NewSource(time.Now().UnixNano()))
 
-	EnableSnappy = true // option: enable Snappy compression in LevelDB or not
+	// option: DatabaseCompressionSnappy, DatabaseCompressionNone, DatabaseCompressionZstd (zstd is Pebble-only)
+	DatabaseCompression = DatabaseCompressionSnappy
 
 	// measure MyHash stats (for accurate measure, need to set hasher.parallel = false)
 	MeasureChildStats  = false // option: if this is enabled, parallel trie node hashing is disabled for accurate measure
@@ -131,6 +138,30 @@ var (
 	IsDoSAttacking    = false
 	CurrentAttackStat = NewAttackStat()
 )
+
+func NormalizeDatabaseCompression(compression string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(compression))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	switch normalized {
+	case "", "default", DatabaseCompressionSnappy:
+		return DatabaseCompressionSnappy, nil
+	case "no", "nocompression", "no-compression", DatabaseCompressionNone:
+		return DatabaseCompressionNone, nil
+	case "zstandard", DatabaseCompressionZstd:
+		return DatabaseCompressionZstd, nil
+	default:
+		return "", fmt.Errorf("unknown database compression %q (available: %s, %s, %s)", compression, DatabaseCompressionSnappy, DatabaseCompressionNone, DatabaseCompressionZstd)
+	}
+}
+
+func SetDatabaseCompression(compression string) error {
+	normalized, err := NormalizeDatabaseCompression(compression)
+	if err != nil {
+		return err
+	}
+	DatabaseCompression = normalized
+	return nil
+}
 
 func ClearDirtyStats() {
 	NilChildNum = 0

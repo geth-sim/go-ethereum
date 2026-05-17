@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -800,15 +801,15 @@ func connHandler(conn net.Conn) {
 				// leveldb.PrintReadStats()
 				if currentBlockNum%1000 == 0 {
 					if common.LoggingReadStats {
-						var nums, times, sizes map[string]int64
-						var depthSum int64
-						if common.IsPathScheme {
-							nums, times, sizes, depthSum = pathdb.ResetCacheStat()
-						} else {
-							nums, times, sizes, depthSum = hashdb.ResetCacheStat()
-						}
-						leveldb.SaveCacheStat(currentBlockNum, nums, times, sizes, depthSum)
-						leveldb.ResetCacheStat(currentBlockNum + 1)
+						// var nums, times, sizes map[string]int64
+						// var depthSum int64
+						// if common.IsPathScheme {
+						// 	nums, times, sizes, depthSum = pathdb.ResetCacheStat()
+						// } else {
+						// 	nums, times, sizes, depthSum = hashdb.ResetCacheStat()
+						// }
+						// leveldb.SaveCacheStat(currentBlockNum, nums, times, sizes, depthSum)
+						// leveldb.ResetCacheStat(currentBlockNum + 1)
 					}
 					if common.LoggingOpcodeStats {
 						// common.CurrentOpcodeStat.Print()
@@ -907,7 +908,7 @@ func connHandler(conn net.Conn) {
 				// 	readStatFileName := "read_stats_" + common.GetSimulationTypeName() + "_" + common.ModifyHashMethod + "_" + strconv.FormatUint(currentBlockNum, 10) + ".json"
 				// 	leveldb.SaveMyReadStats(readStatFilePath+readStatFileName)
 				// }
-				
+
 				// measure modifyHash()'s overhead (this is included in AccountHashes & StorageHashes)
 				simBlock.ModifyHashes = common.ModifyHashes
 				common.ModifyHashes = 0
@@ -916,7 +917,7 @@ func connHandler(conn net.Conn) {
 				common.RandomBytesGenerates = 0
 
 				// save leveldb stats
-				if currentBlockNum%saveLevelDBStatsEpoch == 0 {
+				if dbType == dbTypeLevelDB && currentBlockNum%saveLevelDBStatsEpoch == 0 {
 					leveldbStat := new(common.LevelDBStat)
 					leveldbStat.BlockNum = currentBlockNum
 
@@ -1051,6 +1052,11 @@ func connHandler(conn net.Conn) {
 			case "saveLevelDBStats":
 				// get params
 				fmt.Println("execute saveLevelDBStats()")
+				if dbType != dbTypeLevelDB {
+					fmt.Println("  skip saveLevelDBStats: current db type is", dbType)
+					response = []byte("success")
+					break
+				}
 
 				// set file name
 				mapKeys := make([]string, 0)
@@ -1094,9 +1100,13 @@ func connHandler(conn net.Conn) {
 					} else {
 						hashdb.PrintReadStats()
 					}
-					fmt.Println("LevelDB cache size:", leveldbCache, "MB")
-					leveldb.PrintTotalCacheStat()
-					leveldb.SaveCacheLogs(cacheStatsPath, "cache_stats_"+common.GetSimulationTypeName())
+					if dbType == dbTypeLevelDB {
+						fmt.Println("LevelDB cache size:", leveldbCache, "MB")
+						leveldb.PrintTotalCacheStat()
+						leveldb.SaveCacheLogs(cacheStatsPath, "cache_stats_"+common.GetSimulationTypeName())
+					} else {
+						fmt.Println("skip LevelDB cache logs: current db type is", dbType)
+					}
 				}
 				if common.LoggingOpcodeStats {
 					common.SaveOpcodeLogs(opcodeStatsPath)
@@ -1652,7 +1662,9 @@ func StartStateSimulator() {
 		fmt.Println("  MeasureChildStats:", common.MeasureChildStats)
 		fmt.Println("  StateChildReadCacheSize:", common.StateChildReadCacheSize)
 		fmt.Println("  StorageChildReadCacheSize:", common.StorageChildReadCacheSize)
-		fmt.Println("  EnableSnappy:", common.EnableSnappy)
+		fmt.Println("  dbType:", dbType)
+		fmt.Println("  pebbleEphemeral:", pebbleEphemeral)
+		fmt.Println("  DatabaseCompression:", common.DatabaseCompression)
 		fmt.Println("\nwait for requests...")
 		conn, err := listener.Accept()
 		if err != nil {

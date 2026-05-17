@@ -163,6 +163,23 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 	memTableLimit := 2
 	memTableSize := cache * 1024 * 1024 / 2 / memTableLimit
 
+	// set compression method (jmlee)
+	compression, err := common.NormalizeDatabaseCompression(common.DatabaseCompression)
+	if err != nil {
+		return nil, err
+	}
+	var pebbleCompression pebble.Compression
+	switch compression {
+	case common.DatabaseCompressionSnappy:
+		pebbleCompression = pebble.SnappyCompression
+	case common.DatabaseCompressionNone:
+		pebbleCompression = pebble.NoCompression
+	case common.DatabaseCompressionZstd:
+		pebbleCompression = pebble.ZstdCompression
+	default:
+		return nil, fmt.Errorf("unknown pebble compression %q", compression)
+	}
+
 	// The memory table size is currently capped at maxMemTableSize-1 due to a
 	// known bug in the pebble where maxMemTableSize is not recognized as a
 	// valid size.
@@ -203,13 +220,13 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 		// Per-level options. Options for at least one level must be specified. The
 		// options for the last level are used for all subsequent levels.
 		Levels: []pebble.LevelOptions{
-			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10)},
-			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10)},
-			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10)},
-			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10)},
-			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10)},
-			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10)},
-			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10)},
+			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: pebbleCompression},
+			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: pebbleCompression},
+			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: pebbleCompression},
+			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: pebbleCompression},
+			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: pebbleCompression},
+			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: pebbleCompression},
+			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: pebbleCompression},
 		},
 		ReadOnly: readonly,
 		EventListener: &pebble.EventListener{

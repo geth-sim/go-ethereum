@@ -22,6 +22,7 @@ package leveldb
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -103,9 +104,17 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 			options.ReadOnly = true
 		}
 
-		// set compression option (Snappy is enabled by default)
-		if !common.EnableSnappy {
+		// Set compression option. Snappy is LevelDB's default (jmlee)
+		compression, err := common.NormalizeDatabaseCompression(common.DatabaseCompression)
+		if err != nil {
+			fmt.Println("ERROR:", err)
+			os.Exit(1)
+		}
+		if compression == common.DatabaseCompressionNone {
 			options.Compression = opt.NoCompression
+		} else if compression == common.DatabaseCompressionZstd {
+			fmt.Println("ERROR: leveldb does not support database compression", compression)
+			os.Exit(1)
 		}
 	})
 }

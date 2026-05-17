@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/leveldb"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
+	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/hashdb"
@@ -26,12 +28,24 @@ import (
 	realleveldb "github.com/syndtr/goleveldb/leveldb"
 )
 
+const (
+	dbTypeLevelDB = "leveldb"
+	dbTypePebble  = "pebble"
+	dbTypeMemory  = "memory"
+)
+
 var (
 	//
 	// database
 	//
-	// choose leveldb vs memorydb
-	useLeveldb = true
+
+	// choose database type: leveldb vs pebble vs memorydb
+	dbType = dbTypeLevelDB
+
+	// Keep current geth-1.13 Pebble options, but open it as ephemeral so
+	// write batches use Sync=false. Set false to reproduce geth-1.13 exactly.
+	pebbleEphemeral = true
+
 	// leveldb path ($ sudo chmod -R 777 /ethereum)
 	leveldbPathPrefix = "/ethereum/state_simulator_jmlee/port_"
 	leveldbPath       = leveldbPathPrefix + ServerPort
@@ -42,7 +56,7 @@ var (
 	leveldbReadonly  = false
 	// # of max open files for leveldb (Geth default: 524288)
 	leveldbHandles = 524288
-	// disk to store trie nodes (either leveldb or memorydb)
+	// disk to store trie nodes (leveldb, pebble, or memorydb)
 	diskdb   ethdb.KeyValueStore
 	frdiskdb ethdb.Database
 
@@ -112,6 +126,33 @@ func openLevelDB(dbPath string) (ethdb.KeyValueStore, ethdb.Database) {
 	}
 	fmt.Println("leveldb cache size:", leveldbCache, "MB")
 	frdb, err := rawdb.NewDatabaseWithFreezer(kvdb, dbPath, leveldbNamespace, leveldbReadonly)
+	if err != nil {
+		fmt.Println("frdb error:", err)
+		os.Exit(1)
+	}
+
+	return kvdb, frdb
+}
+
+func openPebbleDB(dbPath string, deleteDisk bool) (ethdb.KeyValueStore, ethdb.Database) {
+	fmt.Println("set pebble at:", dbPath)
+	if deleteDisk {
+		fmt.Println("delete disk, open new disk")
+		err := os.RemoveAll(dbPath)
+		if err != nil {
+			fmt.Println("RemoveAll error ! ->", err)
+		}
+	} else {
+		fmt.Println("do not delete disk, open old db if it exist")
+	}
+
+	kvdb, err := pebble.New(dbPath, leveldbCache, leveldbHandles, leveldbNamespace, leveldbReadonly, pebbleEphemeral)
+	if err != nil {
+		fmt.Println("pebble.New error!! ->", err)
+		os.Exit(1)
+	}
+	fmt.Println("pebble cache size:", leveldbCache, "MB", "/ ephemeral:", pebbleEphemeral)
+	frdb, err := rawdb.NewDatabaseWithFreezer(kvdb, filepath.Join(dbPath, "ancient"), leveldbNamespace, leveldbReadonly)
 	if err != nil {
 		fmt.Println("frdb error:", err)
 		os.Exit(1)
@@ -491,7 +532,7 @@ func setDatabase(deleteDisk bool) {
 	}
 
 	//
-	// set diskdb (TODO(jmlee): enable pebbleDB)
+	// set diskdb
 	//
 
 	// set maximum number of open files
@@ -519,7 +560,10 @@ func setDatabase(deleteDisk bool) {
 	if frdiskdb != nil {
 		frdiskdb.Close()
 	}
-	if useLeveldb {
+	diskdb = nil
+	frdiskdb = nil
+
+	if dbType == dbTypeLevelDB {
 		if common.LoggingReadStats != realleveldb.IsLogging {
 			fmt.Println("ERROR: set leveldb's branch properly -> benchmark vs noBenchmark")
 			fmt.Println("  common.LoggingReadStats:", common.LoggingReadStats)
@@ -554,6 +598,8 @@ func setDatabase(deleteDisk bool) {
 		}
 		diskdb = kvdb
 		frdiskdb = frdb
+	} else if dbType == dbTypePebble {
+		diskdb, frdiskdb = openPebbleDB(leveldbPath, deleteDisk)
 	} else {
 		fmt.Println("set memorydb")
 		diskdb = memorydb.New()
