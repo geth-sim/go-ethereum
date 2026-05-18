@@ -19,7 +19,7 @@ A simulator for replaying Ethereum transactions with various key schemes
 
 git clone https://github.com/geth-sim/goleveldb.git at the same directory as go-ethereum/
 
-set branch as 'benchmark', then it measures leveldb stats
+set branch as 'measureReadStats', then it measures leveldb stats
 
 set branch as 'noBenchmark2', then it measures nothing
 
