@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -66,7 +65,7 @@ var (
 	// trie cache size (MB) (archive mode: 1228, full mode: 614, min: 32)
 	trieCacheSize int
 
-	// TODO(jmlee): implement non-archive mode
+	// implement non-archive mode
 	myTriegc        = prque.New[int64, common.Hash](nil) // Priority queue mapping block numbers to tries to gc
 	myGcproc        time.Duration                        // Accumulates canonical block processing for trie dumping
 	myLastWrite     uint64                               // Last block when the state was flushed
@@ -152,7 +151,7 @@ func openPebbleDB(dbPath string, deleteDisk bool) (ethdb.KeyValueStore, ethdb.Da
 		os.Exit(1)
 	}
 	fmt.Println("pebble cache size:", leveldbCache, "MB", "/ ephemeral:", pebbleEphemeral)
-	frdb, err := rawdb.NewDatabaseWithFreezer(kvdb, filepath.Join(dbPath, "ancient"), leveldbNamespace, leveldbReadonly)
+	frdb, err := rawdb.NewDatabaseWithFreezer(kvdb, dbPath, leveldbNamespace, leveldbReadonly)
 	if err != nil {
 		fmt.Println("frdb error:", err)
 		os.Exit(1)
