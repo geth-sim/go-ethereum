@@ -41,14 +41,13 @@ var (
 	// LevelDB stats, LevelDBStats[blockNumStr] = LevelDBStat
 	LevelDBStats = make(map[string]*LevelDBStat)
 
-	// TODO(jmlee): set archive mode or not
+	// option: set archive mode or not
 	IsArchiveMode = true
 
-	// TODO(jmlee): implement path-based scheme
-	// state scheme is path-based or hash-based
+	// option: state scheme is path-based or hash-based
 	IsPathScheme = false
 
-	// enable snapshot or not
+	// option: enable snapshot or not
 	EnableSnapshot = false
 
 	//
@@ -119,7 +118,7 @@ var (
 
 	ModifyHashes time.Duration // execution time of modifyHash() in the current block
 
-	ModifyHashMethod = "none" // option: JMT, JMT_fixed, JMT_balanced, PrefixTree, PrefixTree_fixed, PrefixTree_balanced, HalfPath, PBSS, TH, none
+	ModifyHashMethod = "none" // option: JMT (VP), JMT_fixed (VP*), JMT_balanced, PrefixTree (PV), PrefixTree_fixed (PV*), PrefixTree_balanced, HalfPath (PH), PBSS (P), TH (VH), none (H)
 
 	GenesisStateRoot Hash // state root of genesis block
 
