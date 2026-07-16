@@ -39,7 +39,19 @@ Options in `common/sim_globals.go`:
 
 * `ReadAllChildNodes`: additionally read all child nodes when hashing trie node (for calculating myHash)
 
+* `UseUnifiedCache`: use one shared cache for child reads performed by myHash across state and storage tries (its size is the sum of the two cache sizes below)
+
+* `StateChildReadCacheSize`: size of the state-trie child-read cache in MB (0 disables it)
+
+* `StorageChildReadCacheSize`: size of the storage-trie child-read cache in MB (0 disables it)
+
 * `AdditionalByteLen`: len of myHash
+
+* `DiskSizeMultiplier`: multiply stored trie-node size by appending random bytes (1.0 disables it; cannot be used with `AdditionalByteLen`)
+
+* `DatabaseCompression`: database compression method (`snappy`, `none`, or `zstd`; `zstd` is Pebble-only)
+
+* `MeasureChildStats`: measure trie child stats with parallel trie-node hashing disabled
 
 * `ModifyHashMethod`: name of trie node key scheme
 
@@ -49,11 +61,11 @@ Options in `common/sim_globals.go`:
 
 * `IsDoSAttacking`: is DoS attacking or executing blocks normally
 
-Options in `simulator/evmsim/ethereum.go`:
+Options in `simulator/statesim/ethereum.go`:
 
-* `useLeveldb`: use LevelDB or MemoryDB
+* `dbType`: database backend (`leveldb`, `pebble`, or `memory`)
 
-* `leveldbPathPrefix`: prefix of LevelDB's path (leveldbPath = leveldbPathPrefix + ServerPort)
+* `leveldbPathPrefix`: prefix of the on-disk database path used by LevelDB or Pebble (`leveldbPath = leveldbPathPrefix + ServerPort`)
 
 * `totalCacheSize`: size of all caches (leveldbCache + dirtyCache + snapshotCache + trieCache)
 
