@@ -1,6 +1,7 @@
 package statesim
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1125,19 +1126,9 @@ func connHandler(conn net.Conn) {
 				lastBlockNum := common.SimBlocks[mapKeys[len(mapKeys)-1]].Number
 				fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + common.ModifyHashMethod + ".json"
 
-				// encoding map to json
-				var jsonData []byte
-				var err error
-				// save all SimBlocks at once
-				jsonData, err = json.MarshalIndent(common.SimBlocks, "", "  ")
-
-				if err != nil {
-					fmt.Println("JSON marshaling error:", err)
-					return
-				}
-
-				// save as a json file
-				err = os.WriteFile(simBlocksPath+fileName, jsonData, 0644)
+				// Save one block at a time. Marshaling the entire map creates a
+				// multi-GB temporary buffer and can leave RSS high after checkpoints.
+				err := writeSimBlocksJSON(fileName, mapKeys)
 				if err != nil {
 					fmt.Println("File write error:", err)
 					return
@@ -1610,6 +1601,63 @@ func getDirectorySizeV2(path string) (int64, error) {
 	return size, nil
 }
 
+func writeSimBlocksJSON(fileName string, mapKeys []string) error {
+	file, err := os.Create(simBlocksPath + fileName)
+	if err != nil {
+		return err
+	}
+	closeFile := true
+	defer func() {
+		if closeFile {
+			file.Close()
+		}
+	}()
+
+	writer := bufio.NewWriterSize(file, 1024*1024)
+
+	if _, err := writer.WriteString("{\n"); err != nil {
+		return err
+	}
+	for i, blockNumStr := range mapKeys {
+		keyData, err := json.Marshal(blockNumStr)
+		if err != nil {
+			return err
+		}
+		blockData, err := json.MarshalIndent(common.SimBlocks[blockNumStr], "  ", "  ")
+		if err != nil {
+			return err
+		}
+		if _, err := writer.WriteString("  "); err != nil {
+			return err
+		}
+		if _, err := writer.Write(keyData); err != nil {
+			return err
+		}
+		if _, err := writer.WriteString(": "); err != nil {
+			return err
+		}
+		if _, err := writer.Write(blockData); err != nil {
+			return err
+		}
+		if i != len(mapKeys)-1 {
+			if _, err := writer.WriteString(","); err != nil {
+				return err
+			}
+		}
+		if _, err := writer.WriteString("\n"); err != nil {
+			return err
+		}
+	}
+	if _, err := writer.WriteString("}"); err != nil {
+		return err
+	}
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+	closeFile = false
+	return file.Close()
+}
+
 // actual main() function
 func StartStateSimulator() {
 
@@ -1655,6 +1703,7 @@ func StartStateSimulator() {
 	// wait for requests
 	for {
 		fmt.Println("  Modify Hash method:", common.ModifyHashMethod)
+		fmt.Println("  IsArchiveMode:", common.IsArchiveMode)
 		fmt.Println("  ReadAllChildNodes:", common.ReadAllChildNodes)
 		fmt.Println("  MyHash length:", common.AdditionalByteLen)
 		fmt.Println("  DiskSizeMultiplier:", common.DiskSizeMultiplier)
