@@ -1,11 +1,13 @@
+import os
+
 import pymysql.cursors
 
 # ethereum tx data DB options
-db_host = 'localhost'
-db_user = 'db_user'
-db_pass = 'db_pass' # fill in the MariaDB/MySQL password.
-db_name = 'db_name' # block 0 ~ 1,000,000
-db_port = 3306 # 3306: mariadb default
+db_host = os.environ.get('SIMULATOR_DB_HOST', 'localhost')
+db_user = os.environ.get('SIMULATOR_DB_USER', 'db_user')
+db_pass = os.environ.get('SIMULATOR_DB_PASSWORD', 'db_pass')
+db_name = os.environ.get('SIMULATOR_DB_NAME', 'db_name')
+db_port = int(os.environ.get('SIMULATOR_DB_PORT', '3306'))
 conn_mariadb = lambda host, port, user, password, database: pymysql.connect(host=host, port=port, user=user, password=password, database=database, cursorclass=pymysql.cursors.DictCursor)
 conn = conn_mariadb(db_host, db_port, db_user, db_pass, db_name)
 cursor = conn.cursor()
@@ -35,7 +37,7 @@ def select_blocks_header(cursor, startblocknumber, endblocknumber):
 
 # read uncles
 def select_uncles(cursor, blocknumber):
-    sql = "SELECT * FROM uncles WHERE `blocknumber`=%s;"
+    sql = "SELECT * FROM uncles WHERE `blocknumber`=%s ORDER BY `uncleposition`, `id`;"
     cursor.execute(sql, (blocknumber,))
     result = cursor.fetchall()
     return result
@@ -83,14 +85,14 @@ def select_slot(cursor, slotid):
 
 # read txs in this block from DB
 def select_txs(cursor, blocknumber):
-    sql = "SELECT * FROM `transactions` WHERE `blocknumber`=%s;"
+    sql = "SELECT * FROM `transactions` WHERE `blocknumber`=%s ORDER BY `transactionindex`, `id`;"
     cursor.execute(sql, (blocknumber,))
     result = cursor.fetchall()
     return result
 
 # read tx's access lists in this block from DB
 def select_txs_access_list(cursor, blocknumber):
-    sql = "SELECT * FROM `transactions_accesslist` WHERE `blocknumber`=%s;"
+    sql = "SELECT * FROM `transactions_accesslist` WHERE `blocknumber`=%s ORDER BY `transactionindex`, `accesslistindex`, `id`;"
     cursor.execute(sql, (blocknumber,))
     result = cursor.fetchall()
     return result

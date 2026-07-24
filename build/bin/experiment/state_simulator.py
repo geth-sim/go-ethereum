@@ -6,7 +6,6 @@ import subprocess
 import json
 import random
 
-from web3 import Web3
 from datetime import datetime
 from os.path import exists
 from multiprocessing.pool import ThreadPool as Pool
@@ -655,7 +654,7 @@ if __name__ == "__main__":
     #
 
     # set simulation options
-    deleteDisk = False
+    deleteDisk = os.environ.get("SIMULATOR_DELETE_STATE_DB", "false").lower() == "true"
     checkStateValidity = True
     saveResults = True
     # set simulation params
@@ -766,6 +765,9 @@ if __name__ == "__main__":
     # 
     # TODO(jmlee): call setSimulationOptions() function before setDatabase() call
     # setSimulationOptions(enableSnapshot=True, trieNodePrefixLen=6, loggingOpcodeStats=False)
+    db_path = os.environ.get("SIMULATOR_STATE_DB_PATH")
+    if db_path:
+        setDbPath(os.path.abspath(db_path))
     setDatabase(deleteDisk)
     simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval)
     # simulateEthereumEVMRandom(startBlockNum, endBlockNum, lastKnownBlockNum, 10000, 800, 40000000)

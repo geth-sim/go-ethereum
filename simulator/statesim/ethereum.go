@@ -31,6 +31,8 @@ const (
 	dbTypeLevelDB = "leveldb"
 	dbTypePebble  = "pebble"
 	dbTypeMemory  = "memory"
+
+	pathStateHistoryBlocks = uint64(90000)
 )
 
 var (
@@ -71,6 +73,7 @@ var (
 	myLastWrite     uint64                               // Last block when the state was flushed
 	myFlushInterval atomic.Int64                         // Time interval (processing time) after which to flush a state
 	dirtyCacheSize  int                                  // path-based trie's dirty cache or hash-based trie's gc limit
+	pathDBHistory   = true                               // persist PathDB reverse-diff history
 
 	// Geth's snapshot
 	mySnaps *snapshot.Tree
@@ -115,7 +118,7 @@ func SetDbPath(dbPath string) {
 }
 
 func openLevelDB(dbPath string) (ethdb.KeyValueStore, ethdb.Database) {
-	dbPath = leveldbPathPrefix + ServerPort + dbPath
+	dbPath = leveldbPath + dbPath
 	fmt.Println("set leveldb at:", dbPath)
 
 	kvdb, err := leveldb.New(dbPath, leveldbCache, leveldbHandles, leveldbNamespace, leveldbReadonly)
@@ -613,7 +616,7 @@ func setDatabase(deleteDisk bool) {
 	if common.IsPathScheme {
 		fmt.Println("set path based scheme")
 		triedbConfig.PathDB = &pathdb.Config{
-			StateHistory:   90000, // (default = 90,000 blocks, 0 = entire chain)
+			StateHistory:   pathStateHistoryBlocks, // (default = 90,000 blocks, 0 = entire chain)
 			CleanCacheSize: trieCacheSize * 1024 * 1024,
 			// TODO(jmlee): check this is right, 얘는 아마 64 ~ 256 MB 까지밖에 설정이 안되는듯함, sanitize() 함수 확인해보기
 			//   메인넷에서 얼마로 설정되나 확인해보기
@@ -626,7 +629,15 @@ func setDatabase(deleteDisk bool) {
 			CleanCacheSize: trieCacheSize * 1024 * 1024,
 		}
 	}
-	mainTrieDB = triedb.NewDatabase(frdiskdb, triedbConfig)
+	trieDiskDB := frdiskdb
+	if common.IsPathScheme && !pathDBHistory {
+		// PathDB enables reverse-diff history whenever its database advertises
+		// an ancient directory. Preserve the same key-value store and state
+		// execution while hiding the freezer for the artifact smoke profile.
+		trieDiskDB = rawdb.NewDatabase(diskdb)
+		fmt.Println("PathDB state history: disabled (artifact smoke profile)")
+	}
+	mainTrieDB = triedb.NewDatabase(trieDiskDB, triedbConfig)
 	// TODO(jmlee): path-based 에선 이렇게 2개 동시에 못여나봄? -> ㅇㅇ 그게 맞는듯
 	// indepTrieDB = triedb.NewDatabase(frdiskdb, triedbConfig)
 	fmt.Println("trie clean cache size:", trieCacheSize, "MB")

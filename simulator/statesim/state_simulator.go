@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,11 +56,11 @@ var (
 	//
 	// simulation result log file path
 	logFilePath      = "./logFiles/evm/"
-	simBlocksPath    = logFilePath + "simBlocks/"
-	cacheStatsPath   = logFilePath + "cacheStats/"
-	opcodeStatsPath  = logFilePath + "opcodeStats/"
-	leveldbStatsPath = logFilePath + "leveldbStats/"
-	errLogPath       = logFilePath + "errLogs/"
+	simBlocksPath    string
+	cacheStatsPath   string
+	opcodeStatsPath  string
+	leveldbStatsPath string
+	errLogPath       string
 
 	//
 	// etc
@@ -151,6 +152,9 @@ func connHandler(conn net.Conn) {
 			case "getSimulationTypeName":
 				typeName := common.GetSimulationTypeName()
 				response = []byte(typeName)
+
+			case "getExperimentID":
+				response = []byte(experimentID)
 
 			case "insertHeader":
 				// get params
@@ -764,7 +768,7 @@ func connHandler(conn net.Conn) {
 						simBlock.DiskSize = size
 						break
 					}
-					if common.IsPathScheme {
+					if common.IsPathScheme && pathDBHistory {
 						cnt = 0
 						for {
 							cnt++
@@ -901,14 +905,19 @@ func connHandler(conn net.Conn) {
 					}
 				}
 
-				// print and save leveldb's read stats (cache hit rate, fake reads, bloom filter)
-				// use goleveldb's branch: "measureReadStats"
-				// leveldb.PrintMyReadStats()
-				// if currentBlockNum%saveLevelDBStatsEpoch == 0 {
-				// 	readStatFilePath := leveldbStatsPath
-				// 	readStatFileName := "read_stats_" + common.GetSimulationTypeName() + "_" + common.ModifyHashMethod + "_" + strconv.FormatUint(currentBlockNum, 10) + ".json"
-				// 	leveldb.SaveMyReadStats(readStatFilePath+readStatFileName)
-				// }
+				// Save cumulative detailed LevelDB read stats (cache hit rate,
+				// negative lookups, and bloom filter behavior). The fast build
+				// compiles this path out; the leveldbstats build links the
+				// measureReadStats goleveldb revision. Console printing remains
+				// disabled because it is intended only for interactive debugging.
+				if dbType == dbTypeLevelDB &&
+					detailedLevelDBStatsEnabled &&
+					currentBlockNum%saveLevelDBStatsEpoch == 0 {
+					readStatFileName := "read_stats_" +
+						experimentID + "_" +
+						strconv.FormatUint(currentBlockNum, 10) + ".json"
+					saveDetailedLevelDBReadStats(leveldbStatsPath + readStatFileName)
+				}
 
 				// measure modifyHash()'s overhead (this is included in AccountHashes & StorageHashes)
 				simBlock.ModifyHashes = common.ModifyHashes
@@ -1065,9 +1074,16 @@ func connHandler(conn net.Conn) {
 					mapKeys = append(mapKeys, k)
 				}
 				sort.Strings(mapKeys)
+				if len(mapKeys) == 0 {
+					fmt.Println("  no periodic LevelDB statistics were collected")
+					response = []byte("success")
+					break
+				}
 				firstBlockNum := uint64(0)
 				lastBlockNum := common.LevelDBStats[mapKeys[len(mapKeys)-1]].BlockNum
-				fileName := "leveldb_stats_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + common.ModifyHashMethod + ".json"
+				fileName := "leveldb_stats_" + experimentID + "_" +
+					strconv.FormatUint(firstBlockNum, 10) + "_" +
+					strconv.FormatUint(lastBlockNum, 10) + ".json"
 
 				// encoding map to json
 				var jsonData []byte
@@ -1104,7 +1120,7 @@ func connHandler(conn net.Conn) {
 					if dbType == dbTypeLevelDB {
 						fmt.Println("LevelDB cache size:", leveldbCache, "MB")
 						leveldb.PrintTotalCacheStat()
-						leveldb.SaveCacheLogs(cacheStatsPath, "cache_stats_"+common.GetSimulationTypeName())
+						leveldb.SaveCacheLogs(cacheStatsPath, "cache_stats_"+experimentID)
 					} else {
 						fmt.Println("skip LevelDB cache logs: current db type is", dbType)
 					}
@@ -1124,7 +1140,9 @@ func connHandler(conn net.Conn) {
 				sort.Strings(mapKeys)
 				firstBlockNum := common.SimBlocks[mapKeys[0]].Number
 				lastBlockNum := common.SimBlocks[mapKeys[len(mapKeys)-1]].Number
-				fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + common.ModifyHashMethod + ".json"
+				fileName = "evm_simulation_result_" + experimentID + "_" +
+					strconv.FormatUint(firstBlockNum, 10) + "_" +
+					strconv.FormatUint(lastBlockNum, 10) + ".json"
 
 				// Save one block at a time. Marshaling the entire map creates a
 				// multi-GB temporary buffer and can leave RSS high after checkpoints.
@@ -1148,7 +1166,7 @@ func connHandler(conn net.Conn) {
 
 				jsonFileName := "evm_simulation_result_"
 				if common.SimulationMode == common.EthereumMode {
-					jsonFileName += common.GetSimulationTypeName() + "_" + params[1] + "_" + params[2] + ".json"
+					jsonFileName += experimentID + "_" + params[1] + "_" + params[2] + ".json"
 				} else if common.SimulationMode == common.EthaneMode {
 					// jsonFileName += "Ethane_" + params[1] + "_" + params[2] + "_" + strconv.FormatUint(deleteEpoch, 10) + "_" + strconv.FormatUint(inactivateEpoch, 10) + "_" + strconv.FormatUint(inactivateCriterion, 10) + ".json"
 				} else if common.SimulationMode == common.EthanosMode {
@@ -1205,7 +1223,7 @@ func connHandler(conn net.Conn) {
 				fmt.Println("targetBlockNum:", targetBlockNum)
 
 				jsonFileName := "evm_simulation_result_"
-				jsonFileName += "Ethereum_" + params[1] + "_" + params[2] + ".json"
+				jsonFileName += experimentID + "_" + params[1] + "_" + params[2] + ".json"
 				fmt.Println("json file name:", jsonFileName)
 
 				// open json file
@@ -1449,18 +1467,36 @@ func connHandler(conn net.Conn) {
 
 				response = []byte("success")
 
-			case "convertKeyalues":
-				fmt.Println("execute convertKeyalues()")
-
-				// set options
-				setRandomKey := false
-				setRandomValue := false
+			case "convertKeyalues", "convertKeyValues":
+				// convertKeyValues,<random-key>,<random-value>,<suffix>,<seed>
+				if len(params) != 5 {
+					response = []byte("error: convertKeyValues requires random-key, random-value, suffix, and seed")
+					break
+				}
+				setRandomKey, keyErr := strconv.ParseBool(params[1])
+				setRandomValue, valueErr := strconv.ParseBool(params[2])
+				suffix := params[3]
+				seed, seedErr := strconv.ParseInt(params[4], 10, 64)
+				if keyErr != nil || valueErr != nil || seedErr != nil ||
+					!regexp.MustCompile(`^[A-Za-z0-9_]+$`).MatchString(suffix) {
+					response = []byte("error: invalid convertKeyValues parameters")
+					break
+				}
+				fmt.Println("execute convertKeyValues()")
 				fmt.Println("  setRandomKey:", setRandomKey, "/ setRandomValue:", setRandomValue)
+				fmt.Println("  suffix:", suffix, "/ seed:", seed)
+				rand.Seed(seed)
 
 				start := time.Now()
 
-				// open new db
-				_, newFrdb := openLevelDB("_convert")
+				// Use a distinct sibling database for every rewrite so the
+				// three E2 outputs cannot overwrite one another.
+				outputPath := leveldbPath + "_rewrite_" + suffix
+				if err := os.RemoveAll(outputPath); err != nil {
+					response = []byte("error: failed to remove old rewrite database")
+					break
+				}
+				_, newDB := openLevelDB("_rewrite_" + suffix)
 
 				var (
 					trieNodeNum       int
@@ -1473,7 +1509,7 @@ func connHandler(conn net.Conn) {
 
 				// iterate original db
 				it := frdiskdb.NewIterator(nil, nil)
-				defer it.Release()
+				var rewriteErr error
 				for it.Next() {
 					if trieNodeNum%100000 == 0 {
 						fmt.Print("\r  show intermediate result -> node num: ", trieNodeNum, " / key size: ", trieNodeKeySize, " / value size: ", trieNodeValueSize, " / elapsed: ", time.Since(start))
@@ -1504,17 +1540,44 @@ func connHandler(conn net.Conn) {
 					// fmt.Println("   new value:", common.Bytes2Hex(newValue))
 
 					// insert original value into new db with new key
-					err := newFrdb.Put(newKey, newValue)
+					err := newDB.Put(newKey, newValue)
 					if err != nil {
-						fmt.Println("Failed to write to DB:", err)
-						os.Exit(1)
+						rewriteErr = err
+						break
 					}
+				}
+				if err := it.Error(); err != nil && rewriteErr == nil {
+					rewriteErr = err
+				}
+				it.Release()
+				if rewriteErr != nil {
+					_ = newDB.Close()
+					response = []byte("error: database rewrite failed")
+					break
+				}
+				if err := newDB.Close(); err != nil {
+					response = []byte("error: failed to close rewrite database")
+					break
+				}
+				outputBytes, sizeErr := getDirectorySizeV2(outputPath)
+				if sizeErr != nil {
+					response = []byte("error: failed to measure rewrite database")
+					break
 				}
 
 				fmt.Println("\n\nfinal result -> node num: ", trieNodeNum, " / key size: ", trieNodeKeySize, " / value size: ", trieNodeValueSize, " / elapsed: ", time.Since(start))
 				fmt.Println("  setRandomKey:", setRandomKey, "/ setRandomValue:", setRandomValue)
 
-				response = []byte("success")
+				summary, _ := json.Marshal(map[string]interface{}{
+					"status": "success", "output_path": outputPath,
+					"random_keys": setRandomKey, "random_values": setRandomValue,
+					"seed": seed, "entry_count": trieNodeNum,
+					"key_bytes":       uint64(trieNodeKeySize),
+					"value_bytes":     uint64(trieNodeValueSize),
+					"database_bytes":  outputBytes,
+					"elapsed_seconds": time.Since(start).Seconds(),
+				})
+				response = summary
 
 			case "stopSimulation":
 				fmt.Println("stop simulation")
@@ -1662,6 +1725,8 @@ func writeSimBlocksJSON(fileName string, mapKeys []string) error {
 func StartStateSimulator() {
 
 	fmt.Println("start state simulator")
+	fmt.Println("experiment ID:", experimentID)
+	fmt.Println("output directory:", logFilePath+"runs/"+experimentID)
 	metrics.EnabledExpensive = enabledExpensive
 
 	// create dir if not exist for log files
@@ -1709,6 +1774,7 @@ func StartStateSimulator() {
 		fmt.Println("  DiskSizeMultiplier:", common.DiskSizeMultiplier)
 		fmt.Println("  MeasureReadStats:", common.MeasureReadStats)
 		fmt.Println("  MeasureChildStats:", common.MeasureChildStats)
+		fmt.Println("  UseUnifiedCache:", common.UseUnifiedCache)
 		fmt.Println("  StateChildReadCacheSize:", common.StateChildReadCacheSize)
 		fmt.Println("  StorageChildReadCacheSize:", common.StorageChildReadCacheSize)
 		fmt.Println("  dbType:", dbType)

@@ -119,6 +119,9 @@ var (
 	ModifyHashes time.Duration // execution time of modifyHash() in the current block
 
 	ModifyHashMethod = "none" // option: JMT (VP), JMT_fixed (VP*), JMT_balanced, PrefixTree (PV), PrefixTree_fixed (PV*), PrefixTree_balanced, HalfPath (PH), PBSS (P), TH (VH), none (H)
+	// VersionModulo controls the version-number wraparound experiment.
+	// Zero disables wrapping. The paper configurations use 0xffff and 0xfffff.
+	VersionModulo uint64 = 0
 
 	GenesisStateRoot Hash // state root of genesis block
 
