@@ -661,7 +661,9 @@ if __name__ == "__main__":
     startBlockNum = 0
     endBlockNum = 10000
     lastKnownBlockNum = 0 # try to load prev results (restore list file is needed)
-    temp_result_save_inteval = 500000 # save simulation results periodically
+    temp_result_save_inteval = int(os.environ.get("SIMULATOR_RESULT_SAVE_INTERVAL", "500000"))
+    if temp_result_save_inteval <= 0:
+        raise ValueError("SIMULATOR_RESULT_SAVE_INTERVAL must be positive")
     trieInspectIntervals = range(0, endBlockNum+1-1000000, 1000000)
     fromLevel = 0 # how many parent nodes to omit in Merkle proofs
     flushInterval = 1 # block flush interval (default: 1, at every block / but genesis block is always flushed)

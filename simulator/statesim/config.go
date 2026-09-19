@@ -318,6 +318,7 @@ func ConfigureSimulator(config SimulatorConfig) error {
 	pathDBHistory = config.PathDBHistory
 	diskSizeMeasureEpoch = config.DiskSizeInterval
 	saveLevelDBStatsEpoch = config.LevelDBStatsInterval
+	statsCheckpointSet = false
 	experimentID = buildExperimentID(config)
 	configureOutputPaths()
 	return nil
