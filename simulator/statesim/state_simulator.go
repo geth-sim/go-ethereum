@@ -1415,7 +1415,13 @@ func connHandler(conn net.Conn) {
 					response = []byte("error: failed to remove old rewrite database")
 					break
 				}
-				_, newDB := openLevelDB("_rewrite_" + suffix)
+				// Rewrites contain randomized chain metadata, so use only the
+				// key-value database without attaching a chain freezer.
+				newDB, err := rawdb.NewLevelDBDatabase(outputPath, leveldbCache, leveldbHandles, leveldbNamespace, leveldbReadonly)
+				if err != nil {
+					response = []byte("error: failed to open rewrite database")
+					break
+				}
 
 				var (
 					trieNodeNum       int
@@ -1476,6 +1482,19 @@ func connHandler(conn net.Conn) {
 				}
 				if err := newDB.Close(); err != nil {
 					response = []byte("error: failed to close rewrite database")
+					break
+				}
+				// Close can leave the final memtable in an uncompressed WAL. Reopen
+				// with the same options as the source so recovery writes it to SSTs
+				// before measuring the compressed database size.
+				fmt.Println("  Finalizing rewritten database before size measurement")
+				finalizedDB, err := rawdb.NewLevelDBDatabase(outputPath, leveldbCache, leveldbHandles, leveldbNamespace, leveldbReadonly)
+				if err != nil {
+					response = []byte("error: failed to reopen rewrite database")
+					break
+				}
+				if err := finalizedDB.Close(); err != nil {
+					response = []byte("error: failed to close finalized rewrite database")
 					break
 				}
 				outputBytes, sizeErr := getDirectorySizeV2(outputPath)
