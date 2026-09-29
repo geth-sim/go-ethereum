@@ -145,4 +145,4 @@ require (
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
 
-replace github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7 => ../goleveldb
+replace github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7 => ../goleveldb-nobenchmark2

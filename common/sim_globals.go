@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math/bits"
 	mrand "math/rand"
 	"os"
 	"sort"
@@ -74,9 +75,28 @@ var (
 	AppendContractAddrHash = false // option: overwrite CA's addrHash to nodeHash
 	AddrHashPrefixLen      = 16    // hex string length when overwriting CA's addrHash to nodeHash, maybe should be >= 16 until 6M blocks
 
-	HashingStateTrie             = false // flag: now hashing state trie
-	HashingStorageTrie           = false // flag: now hashing storage tries
-	AddrHashOfCurrentStorageTrie Hash    // addrHash of CA whose storage trie is being hashed
+	// Parameters for the experimental structured key schemes.
+	// EpochPath and TPV accept powers of two in [1, 2^32]. The legacy DepthEpoch
+	// encoding still requires a power of 16.
+	EpochSize      uint64 = 256
+	DepthThreshold int64  = 4 // TPV: state nibble path length; legacy DS/DE: traversal depth
+	// OutwardStorage selects storage branches through this inclusive nibble path depth.
+	StorageDepthThreshold int64 = 1
+	ShardOwnerPrefixLen         = 1 // owner-hash prefix length in hex nibbles; ShardVP supports 1, 2, or 4
+	// ATileBlocks is the version-tile width used by ATileVP. It must be a
+	// power of two so the 32-bit version can be split without losing bits.
+	// ATileStoragePathPrefixLen is the number of storage-path nibbles placed
+	// before the within-tile version offset.
+	ATileBlocks               uint64 = 128
+	ATileStoragePathPrefixLen        = 1
+	// RunPathTargetNodes controls the logical write-run size. The run advances
+	// only at a block boundary, after this many newly persisted trie nodes have
+	// accumulated, so key construction needs no synchronization in the hot path.
+	RunPathTargetNodes uint64 = 524288
+
+	HashingStateTrie                  = false // flag: now hashing state trie
+	HashingStorageTrie                = false // flag: now hashing storage tries
+	AddrHashOfCurrentStorageTrie Hash         // addrHash of CA whose storage trie is being hashed
 
 	ReadAllChildNodes = false // option: read all full node's child nodes when hashing
 	// Cache sizes in MBs. 0 disables cache.
@@ -116,9 +136,11 @@ var (
 	// CAUTION: maybe need to remote disk before re-run simulator when modifying nodeHash
 	// CAUTION: modified (root) node hash must not be common.Hash{} (= 0x000...0), this is treated as types.EmptyRootHash
 
-	ModifyHashes time.Duration // execution time of modifyHash() in the current block
+	// Sum per-node modifyHash elapsed durations after child hashers finish.
+	// Parallel durations can overlap; this is neither block wall time nor OS CPU time.
+	ModifyHashes time.Duration
 
-	ModifyHashMethod = "none" // option: JMT (VP), JMT_fixed (VP*), JMT_balanced, PrefixTree (PV), PrefixTree_fixed (PV*), PrefixTree_balanced, HalfPath (PH), PBSS (P), TH (VH), none (H)
+	ModifyHashMethod = "ATileVP" // option: JMT (VP), JMT_fixed (VP*), JMT_balanced, PrefixTree (PV), PrefixTree_fixed (PV*), PrefixTree_balanced, EpochPath (EP), TPV, DepthSplit (DS), DepthEpoch (DE), ShardVP, DualVP, RunPath, ForestVP, ATileVP, HalfPath (PH), PBSS (P), TH (VH), none (H)
 
 	GenesisStateRoot Hash // state root of genesis block
 
@@ -137,6 +159,15 @@ var (
 	IsDoSAttacking    = false
 	CurrentAttackStat = NewAttackStat()
 )
+
+// EpochOffsetBits splits the existing 32-bit birth version without losing
+// within-epoch revisions. For EpochPath, size 1 gives VP* ordering and 2^32 PV*.
+func EpochOffsetBits(size uint64) (int, error) {
+	if size == 0 || size > uint64(1)<<32 || size&(size-1) != 0 {
+		return 0, fmt.Errorf("EpochSize must be a power of two in [1, 2^32], got %d", size)
+	}
+	return bits.Len64(size - 1), nil
+}
 
 func NormalizeDatabaseCompression(compression string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(compression))
@@ -266,6 +297,8 @@ type SimBlock struct {
 	AccountReads           time.Duration
 	AccountReadNum         int
 	NonExistAccountReadNum int
+	StorageReadNum         int
+	NonExistStorageReadNum int
 	AccountHashes          time.Duration
 	AccountUpdates         time.Duration
 	AccountCommits         time.Duration

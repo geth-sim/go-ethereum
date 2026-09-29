@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -1188,4 +1189,124 @@ func TestDeleteStorage(t *testing.T) {
 	if slowRes != fastRes {
 		t.Fatalf("difference found:\nfast: %v\nslow: %v\n", fastRes, slowRes)
 	}
+}
+
+// Exercise the real account -> storage-root -> slot references, including two
+// owners, deletion/recreation, and reads of every archived epoch-crossing root.
+func TestTPVAccountStorageArchive(t *testing.T) {
+	testPartitionedAccountStorageArchive(t, "TPV")
+}
+
+func TestSplitPVHotAccountStorageArchive(t *testing.T) {
+	testPartitionedAccountStorageArchive(t, "SplitPVHot")
+}
+
+func testPartitionedAccountStorageArchive(t *testing.T, methodName string) {
+	method, epoch, cutoff := common.ModifyHashMethod, common.EpochSize, common.DepthThreshold
+	versionWidth, lengthWidth, ownerWidth := common.VersionLength, common.LenOfPathLen, common.AddrHashPrefixLen
+	stateSide, storageSide, owner := common.HashingStateTrie, common.HashingStorageTrie, common.AddrHashOfCurrentStorageTrie
+	block := trie.CurrentBlockNum
+	defer func() {
+		common.ModifyHashMethod, common.EpochSize, common.DepthThreshold = method, epoch, cutoff
+		common.VersionLength, common.LenOfPathLen, common.AddrHashPrefixLen = versionWidth, lengthWidth, ownerWidth
+		common.HashingStateTrie, common.HashingStorageTrie, common.AddrHashOfCurrentStorageTrie = stateSide, storageSide, owner
+		trie.SetCurrentBlockNum(block)
+	}()
+	common.ModifyHashMethod, common.EpochSize, common.DepthThreshold = methodName, 128, 3
+	common.VersionLength, common.LenOfPathLen, common.AddrHashPrefixLen = 8, 2, 24
+	common.HashingStateTrie, common.HashingStorageTrie = false, false
+	disk := rawdb.NewMemoryDatabase()
+	db := NewDatabase(disk)
+	versions := []uint64{126, 127, 128, 129, 255, 256}
+	addresses := []common.Address{{1}, {2}}
+	slots := []common.Hash{{1}, {2}, {3}}
+	var roots []common.Hash
+	var snapshots []map[common.Address]map[common.Hash]common.Hash
+	expected := make(map[common.Address]map[common.Hash]common.Hash)
+	parent := types.EmptyRootHash
+	for i, version := range versions {
+		st, err := New(parent, db, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trie.SetCurrentBlockNum(version)
+		for a, address := range addresses {
+			if i == 0 {
+				expected[address] = make(map[common.Hash]common.Hash)
+				st.SetBalance(address, uint256.NewInt(1000))
+				st.SetCode(address, []byte{0x60, byte(a + 1), 0x00})
+			}
+			st.SetNonce(address, version)
+			for j, slot := range slots {
+				if i == 0 || j == 0 || (i == 4 && j == 1) {
+					value := common.BigToHash(new(big.Int).SetUint64(version + uint64(a+1)*1000 + uint64(j)))
+					st.SetState(address, slot, value)
+					expected[address][slot] = value
+				}
+			}
+			if i == 3 {
+				st.SetState(address, slots[1], common.Hash{})
+				expected[address][slots[1]] = common.Hash{}
+			}
+		}
+		root, err := st.Commit(version, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.TrieDB().Commit(root, false); err != nil {
+			t.Fatal(err)
+		}
+		if len(rawdb.ReadLegacyTrieNode(disk, root)) == 0 {
+			t.Fatal("state root missing at its ID")
+		}
+		snapshot := make(map[common.Address]map[common.Hash]common.Hash)
+		for address, values := range expected {
+			snapshot[address] = make(map[common.Hash]common.Hash)
+			for slot, value := range values {
+				snapshot[address][slot] = value
+			}
+		}
+		roots = append(roots, root)
+		snapshots = append(snapshots, snapshot)
+		parent = root
+	}
+	for i, root := range roots {
+		st, err := New(root, NewDatabase(disk), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for a, address := range addresses {
+			if st.GetNonce(address) != versions[i] || st.GetBalance(address).Uint64() != 1000 ||
+				!bytes.Equal(st.GetCode(address), []byte{0x60, byte(a + 1), 0x00}) {
+				t.Fatal("archived account mismatch")
+			}
+			obj := st.getStateObject(address)
+			if len(rawdb.ReadLegacyTrieNode(disk, obj.data.Root)) == 0 {
+				t.Fatal("account storage root does not address its DB key")
+			}
+			for _, slot := range slots {
+				if got := st.GetState(address, slot); got != snapshots[i][address][slot] {
+					t.Fatalf("version %d account %s slot %s: got %s", versions[i], address, slot, got)
+				}
+			}
+		}
+		if st.Error() != nil {
+			t.Fatal(st.Error())
+		}
+	}
+}
+
+func TestOutwardSplitAccountStorageArchive(t *testing.T) {
+	testPartitionedAccountStorageArchive(t, "OutwardSplit")
+}
+
+func TestVPRightAccountStorageArchive(t *testing.T) {
+	testPartitionedAccountStorageArchive(t, "VPRight")
+}
+
+func TestOutwardStorageAccountStorageArchive(t *testing.T) {
+	old := common.StorageDepthThreshold
+	defer func() { common.StorageDepthThreshold = old }()
+	common.StorageDepthThreshold = 1
+	testPartitionedAccountStorageArchive(t, "OutwardStorage")
 }

@@ -56,3 +56,11 @@ tests/spec-tests/
 # evm simulator
 /simulator/logFiles/
 /simulator/additional_node_stats_log.txt
+
+# Rebuildable research outputs and local dependency backup.
+__pycache__/
+*.py[cod]
+/old.go.sum
+
+# Local research papers and reports.
+/papers/

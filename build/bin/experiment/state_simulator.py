@@ -18,7 +18,7 @@ SERVER_IP = "localhost"
 SERVER_PORT = 8994
 
 # simulator options
-deleteDisk = True # delete disk when reset simulator or not
+deleteDisk = False # delete disk when reset simulator or not
 checkStateValidity = True # check state writes' correctness
 saveResults = True # save results as a json file
 

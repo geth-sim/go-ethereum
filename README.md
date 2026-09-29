@@ -2,6 +2,13 @@
 
 A simulator for replaying Ethereum transactions with various key schemes
 
+The [Outward report](papers/reports/outward_authentication_20260928/report_ko.md)
+records the layouts, experimental controls, results, and authentication follow-ups.
+
+Key schemes are implemented in `trie/hasher.go`, with options in
+`common/sim_globals.go`. `simulator/statesim/ethereum.go` initializes and validates
+those options; `simulation_metadata.go` records settings and handles result files.
+
 ### Requirements
 
 * Go (version 1.21 or later)
@@ -17,13 +24,9 @@ A simulator for replaying Ethereum transactions with various key schemes
 
 * prepare LevelDB
 
-git clone https://github.com/geth-sim/goleveldb.git at the same directory as go-ethereum/
-
-set branch as 'measureReadStats', then it measures leveldb stats
-
-set branch as 'noBenchmark2', then it measures nothing
-
-
+The local LevelDB replacement in `go.mod` must point to an available checkout
+(default: `../goleveldb-nobenchmark2`, branch `noBenchmark2`). Use the same engine
+build across compared runs.
 
 ### How to run simulator
 
@@ -53,7 +56,24 @@ Options in `common/sim_globals.go`:
 
 * `MeasureChildStats`: measure trie child stats with parallel trie-node hashing disabled
 
-* `ModifyHashMethod`: name of trie node key scheme
+* `ModifyHashMethod`: selects the key scheme, including the original schemes and
+  `EpochPath`, `TPV`, `SplitPVHot`, `VPRight`, `OutwardSplit`, `OutwardStorage`,
+  `DepthSplit`, `DepthEpoch`, `ShardVP`, `DualVP`, `RunPath`, `ForestVP`, `ATileVP`
+
+* `EpochSize`: blocks per epoch; powers of two in `[1, 2^32]` for EpochPath, TPV
+  and Outward, or powers of 16 for DepthEpoch
+
+* `DepthThreshold`: account path depth in nibbles for TPV, SplitPVHot and Outward;
+  traversal depth for DepthSplit and DepthEpoch
+
+* `StorageDepthThreshold`: storage branch path depth in nibbles for OutwardStorage
+
+* `ShardOwnerPrefixLen`: storage-owner hash prefix length in nibbles for ShardVP
+
+* `RunPathTargetNodes`: newly persisted trie nodes per logical RunPath run
+
+* `ATileBlocks`, `ATileStoragePathPrefixLen`: version-tile width and storage path
+  prefix length for ATileVP
 
 * `LoggingOpcodeStats`: measure opcodes num / time / gas cost or not
 
@@ -77,8 +97,6 @@ Options in `simulator/statesim/state_simulator.go`:
 
 * `saveLevelDBStatsEpoch`: select interval for measuring leveldb stats
 
-
-
 #### Run simulator
 
 in `simulator/`, run this command:
@@ -87,7 +105,8 @@ in `simulator/`, run this command:
 go run main.go <portNum>
 ```
 
-
+Set the scheme and measurement options in the source files listed above before
+running. To use updated settings with a prebuilt binary, rebuild it first.
 
 ### How to run client
 
@@ -101,8 +120,6 @@ Options in `build/bin/experiment/state_simulator.py`:
 
 * Simulator options: set `SERVER_IP` and `SERVER_PORT` of state simulator correctly
 
-
-
 #### Run client
 
 in `build/bin/experiment`, run this command:
@@ -111,7 +128,28 @@ in `build/bin/experiment`, run this command:
 python3 state_simulator.py <portNum> <startBlockNum> <endBlockNum> <lastKnownBlockNum>
 ```
 
+### Results and comparison
 
+SimBlocks JSON records the effective key, database/cache and measurement settings
+alongside block metrics. Client workload settings such as random seeds remain in
+the Python client and experiment records. Existing result files remain readable.
+Result names include scheme parameters. Move or rename previous results before
+repeating the same block interval and scheme settings to avoid overwriting them.
+
+```sh
+python3 simulator/merge_json_files.py --compare 'baseline=<file>' 'candidate=<file>' --start <block> --end <block>
+```
+
+Timing covers `[start,end)` and storage uses `DiskSize` at `end`. The comparison
+metric is `BlockExecuteTime - AccountHashes - StorageHashes`; do not additionally
+subtract `ModifyHashes`, which sums per-node elapsed durations that may overlap
+during parallel hashing. For serial timing analysis, either `MeasureReadStats` or
+`MeasureChildStats` disables trie-hashing parallelism and enables its associated
+statistics. Use the same measurement mode across compared schemes.
+Keep the source revision, engine, cache, compression,
+workload and machine conditions comparable. Legacy files without settings require
+checking experiment records. Detailed designs and results are in the Outward
+report linked above.
 
 ## Go Ethereum
 

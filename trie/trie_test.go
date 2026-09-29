@@ -19,13 +19,17 @@ package trie
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
+	"math/big"
+	"math/bits"
 	"math/rand"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"testing/quick"
 
@@ -1211,4 +1215,1450 @@ func FuzzTrie(f *testing.F) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestStructuredKeyLayouts(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	path := []byte{1, 2, 3}
+	version := uint64(0x00123456)
+	tests := []struct {
+		name   string
+		method string
+		depth  int64
+		want   string
+	}{
+		{
+			name:   "EpochPath",
+			method: "EpochPath",
+			depth:  9,
+			want:   "00123" + "d" + "123" + strings.Repeat("0", 50) + "456" + "03",
+		},
+		{
+			name:   "DepthSplit shallow",
+			method: "DepthSplit",
+			depth:  4,
+			want:   "0" + "00123456" + "d" + "123" + strings.Repeat("0", 49) + "03",
+		},
+		{
+			name:   "DepthSplit deep",
+			method: "DepthSplit",
+			depth:  5,
+			want:   "1" + "d" + "123" + strings.Repeat("0", 49) + "00123456" + "03",
+		},
+		{
+			name:   "DepthEpoch shallow",
+			method: "DepthEpoch",
+			depth:  4,
+			want:   "00123" + "0" + "456" + "d" + "123" + strings.Repeat("0", 49) + "03",
+		},
+		{
+			name:   "DepthEpoch deep",
+			method: "DepthEpoch",
+			depth:  5,
+			want:   "00123" + "1" + "d" + "123" + strings.Repeat("0", 49) + "456" + "03",
+		},
+		{
+			name:   "ShardVP state matches VP star",
+			method: "ShardVP",
+			depth:  9,
+			want:   "00123456" + "d" + "123" + strings.Repeat("0", 50) + "03",
+		},
+		{
+			name:   "DualVP state",
+			method: "DualVP",
+			depth:  9,
+			want:   "d" + "00123456" + "123" + strings.Repeat("0", 50) + "03",
+		},
+		{
+			name:   "RunPath state",
+			method: "RunPath",
+			depth:  9,
+			want:   "00000000" + "d" + "123" + strings.Repeat("0", 42) + "00123456" + "03",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			common.ModifyHashMethod = tt.method
+			got, err := modifyStructuredKey(version, common.TrieNodeData{Path: path, Depth: tt.depth})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotHex := hex.EncodeToString(got); gotHex != tt.want {
+				t.Fatalf("key mismatch\n got: %s\nwant: %s", gotHex, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunPathAdvancesAtBlockBoundary(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	common.ModifyHashMethod = "RunPath"
+	common.RunPathTargetNodes = 5
+	ResetRunPath()
+	AdvanceRunPath(4)
+	got, err := modifyStructuredKey(0x42, common.TrieNodeData{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotHex := hex.EncodeToString(got); !strings.HasPrefix(gotHex, "00000000") {
+		t.Fatalf("run advanced too early: %s", gotHex)
+	}
+	AdvanceRunPath(1)
+	got, err = modifyStructuredKey(0x43, common.TrieNodeData{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotHex := hex.EncodeToString(got); !strings.HasPrefix(gotHex, "00000001") {
+		t.Fatalf("run did not advance at target: %s", gotHex)
+	}
+}
+
+func TestForestVPLayouts(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	versionStr := "00123456"
+	common.ModifyHashMethod = "ForestVP"
+	common.HashingStateTrie = true
+	common.HashingStorageTrie = false
+
+	internal, err := modifyForestVPKey(versionStr, &fullNode{}, common.TrieNodeData{Path: []byte{1, 2, 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInternal := versionStr + "123" + strings.Repeat("0", 50) + "d" + "03"
+	if got := hex.EncodeToString(internal); got != wantInternal {
+		t.Fatalf("state internal mismatch\n got: %s\nwant: %s", got, wantInternal)
+	}
+
+	leafKey := append(bytes.Repeat([]byte{0xa}, 64), byte(16))
+	leaf := &shortNode{Key: leafKey, Val: valueNode{1}}
+	stateLeaf, err := modifyForestVPKey(versionStr, leaf, common.TrieNodeData{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLeaf := versionStr + strings.Repeat("a", 24) + strings.Repeat("0", 29) + "e" + "18"
+	if got := hex.EncodeToString(stateLeaf); got != wantLeaf {
+		t.Fatalf("state leaf mismatch\n got: %s\nwant: %s", got, wantLeaf)
+	}
+
+	common.HashingStateTrie = false
+	common.HashingStorageTrie = true
+	common.AddrHashOfCurrentStorageTrie = common.HexToHash("0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+	storage, err := modifyForestVPKey(versionStr, &fullNode{}, common.TrieNodeData{Path: []byte{0xe}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStorage := versionStr + "abcdef0123456789abcdef01" + "e" + strings.Repeat("0", 28) + "f" + "01"
+	if got := hex.EncodeToString(storage); got != wantStorage {
+		t.Fatalf("storage mismatch\n got: %s\nwant: %s", got, wantStorage)
+	}
+}
+
+func TestDualVPStorageLayout(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	common.HashingStateTrie = false
+	common.HashingStorageTrie = true
+	common.AddrHashOfCurrentStorageTrie = common.HexToHash("0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+	common.ModifyHashMethod = "DualVP"
+
+	got, err := modifyStructuredKey(0x00123456, common.TrieNodeData{Path: []byte{0xe}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "f" + "00123456" + "abcdef0123456789abcdef01" + "e" + strings.Repeat("0", 28) + "01"
+	if gotHex := hex.EncodeToString(got); gotHex != want {
+		t.Fatalf("storage key mismatch\n got: %s\nwant: %s", gotHex, want)
+	}
+}
+
+func TestShardVPStorageLayouts(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	common.HashingStateTrie = false
+	common.HashingStorageTrie = true
+	common.AddrHashOfCurrentStorageTrie = common.HexToHash("0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+	common.ModifyHashMethod = "ShardVP"
+
+	version := uint64(0x00123456)
+	path := []byte{0xe}
+	owner := "abcdef0123456789abcdef01"
+	for _, prefixLen := range []int{1, 2, 4} {
+		t.Run(fmt.Sprintf("prefix-%d", prefixLen), func(t *testing.T) {
+			common.ShardOwnerPrefixLen = prefixLen
+			got, err := modifyStructuredKey(version, common.TrieNodeData{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			versionStr := "00123456"
+			versionSplit := len(versionStr) - prefixLen
+			want := owner[:prefixLen] + versionStr[:versionSplit] + "f" + versionStr[versionSplit:] + owner[prefixLen:] + "e" + strings.Repeat("0", 28) + "01"
+			gotHex := hex.EncodeToString(got)
+			if gotHex != want {
+				t.Fatalf("storage key mismatch\n got: %s\nwant: %s", gotHex, want)
+			}
+			if gotHex[8] != 'f' {
+				t.Fatalf("trie type moved from collision-safe offset 8: %s", gotHex)
+			}
+		})
+	}
+
+	common.ShardOwnerPrefixLen = 3
+	if _, err := modifyStructuredKey(version, common.TrieNodeData{Path: path}); err == nil {
+		t.Fatal("unsupported owner prefix length was accepted")
+	}
+}
+
+func TestATileVP64Layouts(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	common.ModifyHashMethod = "ATileVP"
+	common.ATileBlocks = 64
+	common.ATileStoragePathPrefixLen = 1
+	version := uint64(0x00123456)
+
+	common.HashingStateTrie = true
+	common.HashingStorageTrie = false
+	state, err := modifyStructuredKey(version, common.TrieNodeData{Path: []byte{1, 2, 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantState := "001234756123" + strings.Repeat("0", 50) + "03"
+	if got := hex.EncodeToString(state); got != wantState {
+		t.Fatalf("state key mismatch\n got: %s\nwant: %s", got, wantState)
+	}
+
+	common.HashingStateTrie = false
+	common.HashingStorageTrie = true
+	common.AddrHashOfCurrentStorageTrie = common.HexToHash("0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+	storage, err := modifyStructuredKey(version, common.TrieNodeData{Path: []byte{0xe}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStorage := "0012347eaf37bc048d159e26af37bc0796" + strings.Repeat("0", 28) + "01"
+	if got := hex.EncodeToString(storage); got != wantStorage {
+		t.Fatalf("storage key mismatch\n got: %s\nwant: %s", got, wantStorage)
+	}
+}
+
+func TestATileVPEndpointAndVersionOrdering(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	common.ModifyHashMethod = "ATileVP"
+	common.ATileBlocks = 1
+	common.HashingStateTrie = true
+	common.HashingStorageTrie = false
+	path := []byte{0xa, 0xb}
+	version := uint64(0x12345678)
+	got, err := modifyStructuredKey(version, common.TrieNodeData{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantVP := "12345678" + "d" + "ab" + strings.Repeat("0", 51) + "02"
+	if gotHex := hex.EncodeToString(got); gotHex != wantVP {
+		t.Fatalf("ATileBlocks=1 should match VP* state layout\n got: %s\nwant: %s", gotHex, wantVP)
+	}
+
+	common.ATileBlocks = 64
+	previous, err := modifyStructuredKey(63, common.TrieNodeData{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := modifyStructuredKey(64, common.TrieNodeData{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Compare(previous, next) >= 0 {
+		t.Fatalf("version tile order is not monotonic: %x >= %x", previous, next)
+	}
+}
+
+func TestATileVPRejectsInvalidParameters(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	common.ModifyHashMethod = "ATileVP"
+	common.ATileBlocks = 48
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+		t.Fatal("non-power-of-two ATileBlocks was accepted")
+	}
+	common.ATileBlocks = 64
+	common.ATileStoragePathPrefixLen = 30
+	common.HashingStateTrie = false
+	common.HashingStorageTrie = true
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+		t.Fatal("invalid ATileStoragePathPrefixLen was accepted")
+	}
+}
+
+func TestEpochPathEndpoints(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	common.ModifyHashMethod = "EpochPath"
+	path := []byte{0xa, 0xb}
+	version := uint64(0x12345678)
+
+	common.EpochSize = 1
+	got, err := modifyStructuredKey(version, common.TrieNodeData{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantVP := "12345678" + "d" + "ab" + strings.Repeat("0", 51) + "02"
+	if gotHex := hex.EncodeToString(got); gotHex != wantVP {
+		t.Fatalf("EpochSize=1 should match VP* layout\n got: %s\nwant: %s", gotHex, wantVP)
+	}
+
+	common.EpochSize = uint64(1) << 32
+	got, err = modifyStructuredKey(version, common.TrieNodeData{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPV := "d" + "ab" + strings.Repeat("0", 51) + "12345678" + "02"
+	if gotHex := hex.EncodeToString(got); gotHex != wantPV {
+		t.Fatalf("EpochSize=2^32 should match PV* layout\n got: %s\nwant: %s", gotHex, wantPV)
+	}
+}
+
+func TestStructuredStorageKeyAndInvalidEpoch(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+
+	common.HashingStateTrie = false
+	common.HashingStorageTrie = true
+	common.AddrHashOfCurrentStorageTrie = common.HexToHash("0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+	common.ModifyHashMethod = "DepthSplit"
+
+	got, err := modifyStructuredKey(0x42, common.TrieNodeData{Path: []byte{0xe}, Depth: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "1" + "fabcdef0123456789abcdef01" + "e" + strings.Repeat("0", 27) + "00000042" + "01"
+	if gotHex := hex.EncodeToString(got); gotHex != want {
+		t.Fatalf("storage key mismatch\n got: %s\nwant: %s", gotHex, want)
+	}
+
+	common.ModifyHashMethod = "EpochPath"
+	common.EpochSize = 1000
+	if _, err := modifyStructuredKey(0x42, common.TrieNodeData{}); err == nil {
+		t.Fatal("expected non-power-of-16 EpochSize to fail")
+	}
+}
+
+func TestStructuredKeyCommitAndReload(t *testing.T) {
+	for _, method := range []string{"EpochPath", "TPV", "SplitPVHot", "OutwardSplit", "VPRight", "DepthSplit", "DepthEpoch", "ShardVP", "DualVP", "RunPath", "ForestVP", "ATileVP"} {
+		t.Run(method, func(t *testing.T) {
+			restore := setStructuredKeyTestGlobals()
+			defer restore()
+
+			common.ModifyHashMethod = method
+			db := newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.HashScheme)
+			parent := types.EmptyRootHash
+			expected := make(map[string][]byte)
+
+			for version := uint64(1); version <= 4; version++ {
+				var tr *Trie
+				if version == 1 {
+					tr = NewEmpty(db)
+				} else {
+					var err error
+					tr, err = New(TrieID(parent), db)
+					if err != nil {
+						t.Fatalf("open version %d: %v", version, err)
+					}
+				}
+
+				key := bytes.Repeat([]byte{byte(version)}, 32)
+				value := bytes.Repeat([]byte{byte(version + 16)}, 64)
+				tr.MustUpdate(key, value)
+				expected[string(key)] = value
+				SetCurrentBlockNum(version)
+
+				root, nodes, err := tr.Commit(false)
+				if err != nil {
+					t.Fatalf("commit version %d: %v", version, err)
+				}
+				if err := db.Update(root, parent, trienode.NewWithNodeSet(nodes)); err != nil {
+					t.Fatalf("update database at version %d: %v", version, err)
+				}
+				if err := db.Commit(root); err != nil {
+					t.Fatalf("flush database at version %d: %v", version, err)
+				}
+
+				reloaded, err := New(TrieID(root), db)
+				if err != nil {
+					t.Fatalf("reload version %d: %v", version, err)
+				}
+				for storedKey, want := range expected {
+					got, err := reloaded.Get([]byte(storedKey))
+					if err != nil {
+						t.Fatalf("read version %d: %v", version, err)
+					}
+					if !bytes.Equal(got, want) {
+						t.Fatalf("value mismatch at version %d", version)
+					}
+				}
+				parent = root
+			}
+		})
+	}
+}
+
+func TestStructuredKeyTimingReachesBlockCounter(t *testing.T) {
+	for _, updates := range []int{1, 128} { // serial and parallel hashing thresholds
+		t.Run(fmt.Sprint(updates), func(t *testing.T) {
+			restore := setStructuredKeyTestGlobals()
+			defer restore()
+			oldTime, oldTrie := common.ModifyHashes, CurrentTrie
+			oldReadStats, oldChildStats := common.MeasureReadStats, common.MeasureChildStats
+			defer func() {
+				common.ModifyHashes, CurrentTrie = oldTime, oldTrie
+				common.MeasureReadStats, common.MeasureChildStats = oldReadStats, oldChildStats
+			}()
+			common.ModifyHashMethod = "OutwardSplit"
+			common.MeasureReadStats, common.MeasureChildStats = false, false
+			SetCurrentBlockNum(1)
+			tr := NewEmpty(newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.HashScheme))
+			for i := 0; i < updates; i++ {
+				tr.MustUpdate([]byte{byte(i)}, bytes.Repeat([]byte{1}, 64))
+			}
+			common.ModifyHashes = 0
+			root := tr.Hash()
+			if common.ModifyHashes <= 0 {
+				t.Fatal("key-construction time did not reach the block counter")
+			}
+			common.ModifyHashes = 0
+			if tr.Hash() != root || common.ModifyHashes != 0 {
+				t.Fatal("cached hashing changed the root or counted key construction twice")
+			}
+		})
+	}
+}
+
+func setStructuredKeyTestGlobals() func() {
+	oldMethod := common.ModifyHashMethod
+	oldVersionLength := common.VersionLength
+	oldLenOfPathLen := common.LenOfPathLen
+	oldAddrHashPrefixLen := common.AddrHashPrefixLen
+	oldEpochSize := common.EpochSize
+	oldDepthThreshold := common.DepthThreshold
+	oldShardOwnerPrefixLen := common.ShardOwnerPrefixLen
+	oldRunPathTargetNodes := common.RunPathTargetNodes
+	oldATileBlocks := common.ATileBlocks
+	oldATileStoragePathPrefixLen := common.ATileStoragePathPrefixLen
+	oldHashingStateTrie := common.HashingStateTrie
+	oldHashingStorageTrie := common.HashingStorageTrie
+	oldAddrHash := common.AddrHashOfCurrentStorageTrie
+	oldBlockNum := CurrentBlockNum
+	oldRunPathID := currentRunPathID
+	oldRunPathPendingNodes := runPathPendingNodes
+
+	common.VersionLength = 8
+	common.LenOfPathLen = 2
+	common.AddrHashPrefixLen = 24
+	common.EpochSize = 4096
+	common.DepthThreshold = 4
+	common.ShardOwnerPrefixLen = 1
+	common.RunPathTargetNodes = 524288
+	common.ATileBlocks = 64
+	common.ATileStoragePathPrefixLen = 1
+	ResetRunPath()
+	common.HashingStateTrie = true
+	common.HashingStorageTrie = false
+
+	return func() {
+		common.ModifyHashMethod = oldMethod
+		common.VersionLength = oldVersionLength
+		common.LenOfPathLen = oldLenOfPathLen
+		common.AddrHashPrefixLen = oldAddrHashPrefixLen
+		common.EpochSize = oldEpochSize
+		common.DepthThreshold = oldDepthThreshold
+		common.ShardOwnerPrefixLen = oldShardOwnerPrefixLen
+		common.RunPathTargetNodes = oldRunPathTargetNodes
+		common.ATileBlocks = oldATileBlocks
+		common.ATileStoragePathPrefixLen = oldATileStoragePathPrefixLen
+		common.HashingStateTrie = oldHashingStateTrie
+		common.HashingStorageTrie = oldHashingStorageTrie
+		common.AddrHashOfCurrentStorageTrie = oldAddrHash
+		CurrentBlockNum = oldBlockNum
+		currentRunPathID = oldRunPathID
+		runPathPendingNodes = oldRunPathPendingNodes
+	}
+}
+
+func TestEpochPathBitLayoutsAndLegacyCompatibility(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod = "EpochPath"
+	common.AddrHashOfCurrentStorageTrie = common.HexToHash("abcdef0123456789abcdef010000000000000000000000000000000000000000")
+	path := []byte{1, 2, 3}
+	version := uint64(0x12345678)
+	for _, storage := range []bool{false, true} {
+		common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+		common.EpochSize = 128
+		got, err := modifyStructuredKey(version, common.TrieNodeData{Path: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "1234566891800000000000000000000000000000000000000000000000007803"
+		if storage {
+			want = "1234567d5e6f78091a2b3c4d5e6f780891800000000000000000000000007803"
+		}
+		if hex.EncodeToString(got) != want {
+			t.Fatalf("EP-128 storage=%v: got %x, want %s", storage, got, want)
+		}
+		// The new bit encoder must preserve every old nibble-based EP layout.
+		for digits := 0; digits <= 8; digits++ {
+			common.EpochSize = uint64(1) << (4 * digits)
+			got, err := modifyStructuredKey(version, common.TrieNodeData{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			v := fmt.Sprintf("%08x", version)
+			location := "d" + "123" + strings.Repeat("0", 50)
+			if storage {
+				location = "f" + "abcdef0123456789abcdef01" + "123" + strings.Repeat("0", 26)
+			}
+			want := v[:8-digits] + location + v[8-digits:] + "03"
+			if hex.EncodeToString(got) != want {
+				t.Fatalf("legacy mismatch storage=%v epoch=%d: %x != %s", storage, common.EpochSize, got, want)
+			}
+		}
+	}
+}
+
+func TestEpochPath128OrderingAndValidation(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.EpochSize = "EpochPath", 128
+	key := func(v uint64, path []byte) []byte {
+		t.Helper()
+		k, err := modifyStructuredKey(v, common.TrieNodeData{Path: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	for _, storage := range []bool{false, true} {
+		common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+		a0, a1, b0 := key(128, []byte{1}), key(129, []byte{1}), key(128, []byte{2})
+		if bytes.Compare(a0, a1) >= 0 || bytes.Compare(a1, b0) >= 0 {
+			t.Fatal("revisions were not grouped by path inside epoch")
+		}
+		if bytes.Compare(key(127, []byte{15}), key(128, nil)) >= 0 {
+			t.Fatal("successive epoch ranges overlap")
+		}
+		if bytes.Equal(a0, key(128, []byte{1, 0})) {
+			t.Fatal("path padding lost the actual path length")
+		}
+		capacity := 53
+		if storage {
+			capacity = 29
+		}
+		key((uint64(1)<<32)-1, bytes.Repeat([]byte{15}, capacity))
+		for _, path := range [][]byte{bytes.Repeat([]byte{0}, capacity+1), {16}} {
+			if _, err := modifyStructuredKey(128, common.TrieNodeData{Path: path}); err == nil {
+				t.Fatal("invalid path accepted")
+			}
+		}
+	}
+	if _, err := modifyStructuredKey(uint64(1)<<32, common.TrieNodeData{}); err == nil {
+		t.Fatal("overflowing version accepted")
+	}
+	for _, epoch := range []uint64{0, 3, 1000, (uint64(1) << 32) + 1} {
+		common.EpochSize = epoch
+		if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+			t.Fatalf("invalid epoch %d accepted", epoch)
+		}
+	}
+}
+
+func TestEpochPath128PreservesHistoricalReferences(t *testing.T) {
+	for _, storage := range []bool{false, true} {
+		t.Run(fmt.Sprintf("storage=%v", storage), func(t *testing.T) {
+			restore := setStructuredKeyTestGlobals()
+			defer restore()
+			common.ModifyHashMethod, common.EpochSize = "EpochPath", 128
+			common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+			common.AddrHashOfCurrentStorageTrie = common.HexToHash("123456789abcdef01234567890000000000000000000000000000000000000000")
+			disk := rawdb.NewMemoryDatabase()
+			db := newTestDatabase(disk, rawdb.HashScheme)
+			parent := types.EmptyRootHash
+			var roots []common.Hash
+			var snapshots []map[string][]byte
+			expected := make(map[string][]byte)
+			versions := []uint64{126, 127, 128, 129, 255, 256}
+			for i, version := range versions {
+				tr, err := New(TrieID(parent), db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for j := 1; j <= 4; j++ {
+					key := bytes.Repeat([]byte{byte(j)}, 32)
+					// Keep some old-born children while rewriting one logical path
+					// repeatedly on both sides of the epoch boundary.
+					if i == 0 || j == 1 {
+						value := bytes.Repeat([]byte{byte(version)}, 64)
+						tr.MustUpdate(key, value)
+						expected[string(key)] = value
+					}
+				}
+				if i == 3 {
+					key := bytes.Repeat([]byte{4}, 32)
+					tr.MustDelete(key)
+					delete(expected, string(key))
+				}
+				SetCurrentBlockNum(version)
+				root, nodes, err := tr.Commit(false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Update(root, parent, trienode.NewWithNodeSet(nodes)); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Commit(root); err != nil {
+					t.Fatal(err)
+				}
+				copy := make(map[string][]byte)
+				for k, v := range expected {
+					copy[k] = common.CopyBytes(v)
+				}
+				roots, snapshots = append(roots, root), append(snapshots, copy)
+				parent = root
+			}
+			// No cached node sets: every historical root must resolve references
+			// directly as physical DB keys, including children from old epochs.
+			for i, root := range roots {
+				tr, err := New(TrieID(root), newTestDatabase(disk, rawdb.HashScheme))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for j := 1; j <= 4; j++ {
+					key := bytes.Repeat([]byte{byte(j)}, 32)
+					got, err := tr.Get(key)
+					if err != nil || !bytes.Equal(got, snapshots[i][string(key)]) {
+						t.Fatalf("version %d key %x: got %x, error %v", versions[i], key, got, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTPV128D3Layouts(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.EpochSize, common.DepthThreshold = "TPV", 128, 3
+	common.AddrHashOfCurrentStorageTrie = common.HexToHash("abcdef0123456789abcdef010000000000000000000000000000000000000000")
+	// Independently generated integer-packing vectors, including both sides of
+	// the cutoff. Deliberately incorrect traversal depth must not affect G.
+	for _, test := range []struct {
+		storage bool
+		path    []byte
+		want    string
+	}{
+		{false, nil, "1234563400000000000000000000000000000000000000000000000000003c00"},
+		{false, []byte{1, 2, 3}, "1234563448c00000000000000000000000000000000000000000000000003c03"},
+		{false, []byte{1, 2, 3, 4}, "1234567c6891a000000000000000000000000000000000000000000000000004"},
+		{true, nil, "1234567c7d5e6f78091a2b3c4d5e6f7808000000000000000000000000000000"},
+		{true, []byte{1, 2, 3, 4}, "1234567c7d5e6f78091a2b3c4d5e6f780891a000000000000000000000000004"},
+	} {
+		common.HashingStateTrie, common.HashingStorageTrie = !test.storage, test.storage
+		got, err := modifyStructuredKey(0x12345678, common.TrieNodeData{Path: test.path, Depth: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hex.EncodeToString(got) != test.want {
+			t.Fatalf("storage=%v path=%x: %x != %s", test.storage, test.path, got, test.want)
+		}
+	}
+}
+
+func TestTPV128D3OrderingAndIdentity(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.EpochSize, common.DepthThreshold = "TPV", 128, 3
+	paths := [][]byte{nil, {1}, {1, 2}, {1, 2, 3}, {1, 2, 3, 4}, {9}, {9, 10}, {9, 10, 11}, {9, 10, 11, 12}}
+	names := []string{"r", "a", "b", "c", "d", "x", "y", "z", "w"}
+	type entry struct {
+		name string
+		key  []byte
+	}
+	var entries []entry
+	for version := uint64(128); version <= 130; version++ {
+		for i, path := range paths {
+			key, err := modifyStructuredKey(version, common.TrieNodeData{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries = append(entries, entry{fmt.Sprintf("%s%d", names[i], version-127), key})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return bytes.Compare(entries[i].key, entries[j].key) < 0 })
+	var got []string
+	for _, entry := range entries {
+		got = append(got, entry.name)
+	}
+	want := "r1 r2 r3 a1 a2 a3 b1 b2 b3 c1 c2 c3 x1 x2 x3 y1 y2 y3 z1 z2 z3 d1 w1 d2 w2 d3 w3"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("wrong TPV order: %v", got)
+	}
+	// Across both trie sides, all body keys retain VP's relative ordering.
+	var priorMax []byte
+	for _, version := range []uint64{127, 128, 129, 255, 256, (uint64(1) << 32) - 1} {
+		var body [][]byte
+		for _, storage := range []bool{false, true} {
+			common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+			for _, path := range [][]byte{{1, 2, 3, 4}, {15, 15, 15, 15}} {
+				key, err := modifyStructuredKey(version, common.TrieNodeData{Path: path})
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = append(body, key)
+			}
+		}
+		sort.Slice(body, func(i, j int) bool { return bytes.Compare(body[i], body[j]) < 0 })
+		if priorMax != nil && bytes.Compare(priorMax, body[0]) >= 0 {
+			t.Fatal("body version order lost")
+		}
+		priorMax = body[len(body)-1]
+	}
+	// Full identity remains distinct at padding ties and epoch endpoints.
+	for _, epoch := range []uint64{1, 128, 256, uint64(1) << 32} {
+		common.EpochSize = epoch
+		seen := make(map[string]bool)
+		for _, storage := range []bool{false, true} {
+			common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+			capacity := 53
+			if storage {
+				capacity = 29
+			}
+			for _, version := range []uint64{0, 127, 128, 129, (uint64(1) << 32) - 1} {
+				for length := 0; length <= capacity; length++ {
+					key, err := modifyStructuredKey(version, common.TrieNodeData{Path: make([]byte, length)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(key) != 32 || seen[string(key)] {
+						t.Fatal("identity collision or wrong length")
+					}
+					seen[string(key)] = true
+				}
+			}
+		}
+	}
+}
+
+func TestTPVRejectsInvalidParameters(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.EpochSize, common.DepthThreshold = "TPV", 128, 3
+	for _, path := range [][]byte{{16}, make([]byte, 54)} {
+		if _, err := modifyStructuredKey(1, common.TrieNodeData{Path: path}); err == nil {
+			t.Fatal("invalid state path accepted")
+		}
+	}
+	common.HashingStateTrie, common.HashingStorageTrie = false, true
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{Path: make([]byte, 30)}); err == nil {
+		t.Fatal("invalid storage path accepted")
+	}
+	if _, err := modifyStructuredKey(uint64(1)<<32, common.TrieNodeData{}); err == nil {
+		t.Fatal("version overflow accepted")
+	}
+	for _, cutoff := range []int64{-1, 54} {
+		common.DepthThreshold = cutoff
+		if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+			t.Fatal("invalid cutoff accepted")
+		}
+	}
+	common.DepthThreshold = 3
+	for _, epoch := range []uint64{0, 1000, (uint64(1) << 32) + 1} {
+		common.EpochSize = epoch
+		if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+			t.Fatal("invalid epoch accepted")
+		}
+	}
+}
+
+func TestTPVPreservesHistoricalReferences(t *testing.T) {
+	testPartitionedHistoricalReferences(t, "TPV")
+}
+
+func TestSplitPVHotPreservesHistoricalReferences(t *testing.T) {
+	testPartitionedHistoricalReferences(t, "SplitPVHot")
+}
+
+func testPartitionedHistoricalReferences(t *testing.T, method string) {
+	for _, storage := range []bool{false, true} {
+		t.Run(fmt.Sprintf("storage=%v", storage), func(t *testing.T) {
+			restore := setStructuredKeyTestGlobals()
+			defer restore()
+			common.ModifyHashMethod, common.EpochSize, common.DepthThreshold = method, 128, 3
+			common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+			common.AddrHashOfCurrentStorageTrie = common.HexToHash("123456789abcdef01234567890000000000000000000000000000000000000000")
+			disk := rawdb.NewMemoryDatabase()
+			db := newTestDatabase(disk, rawdb.HashScheme)
+			keys := [][]byte{}
+			for _, prefix := range [][]byte{{0x12, 0x34, 0x50}, {0x12, 0x34, 0x60}, {0x12, 0x44}, {0x98}} {
+				key := make([]byte, 32)
+				copy(key, prefix)
+				keys = append(keys, key)
+			}
+			versions := []uint64{126, 127, 128, 129, 255, 256}
+			parent := types.EmptyRootHash
+			var roots []common.Hash
+			var snapshots []map[string][]byte
+			expected := make(map[string][]byte)
+			seenUpper, seenBody := false, false
+			for i, version := range versions {
+				tr, err := New(TrieID(parent), db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for j, key := range keys {
+					if i == 0 || j == 0 || (i == 4 && j == 1) {
+						value := bytes.Repeat([]byte{byte(version)}, 64)
+						tr.MustUpdate(key, value)
+						expected[string(key)] = value
+					}
+				}
+				if i == 3 {
+					tr.MustDelete(keys[1])
+					delete(expected, string(keys[1]))
+				}
+				SetCurrentBlockNum(version)
+				root, nodes, err := tr.Commit(false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for path, node := range nodes.Nodes {
+					if node.IsDeleted() {
+						continue
+					}
+					want, err := modifyStructuredKey(version, common.TrieNodeData{Path: []byte(path)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if node.Hash != common.BytesToHash(want) {
+						t.Fatal("persisted node ID differs from constructed key")
+					}
+					if storage || len(path) > 3 {
+						seenBody = true
+					} else {
+						seenUpper = true
+					}
+				}
+				if err := db.Update(root, parent, trienode.NewWithNodeSet(nodes)); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Commit(root); err != nil {
+					t.Fatal(err)
+				}
+				for _, node := range nodes.Nodes {
+					if !node.IsDeleted() && !bytes.Equal(rawdb.ReadLegacyTrieNode(disk, node.Hash), node.Blob) {
+						t.Fatal("node blob not stored under its identical 32B ID")
+					}
+				}
+				snapshot := make(map[string][]byte)
+				for key, value := range expected {
+					snapshot[key] = common.CopyBytes(value)
+				}
+				roots = append(roots, root)
+				snapshots = append(snapshots, snapshot)
+				parent = root
+			}
+			if !seenBody || (!storage && !seenUpper) {
+				t.Fatal("fixture did not cover required classes")
+			}
+			for i, root := range roots {
+				tr, err := New(TrieID(root), newTestDatabase(disk, rawdb.HashScheme))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, key := range keys {
+					got, err := tr.Get(key)
+					if err != nil || !bytes.Equal(got, snapshots[i][string(key)]) {
+						t.Fatalf("version %d key %x: got %x, error %v", versions[i], key, got, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestOutwardSplitPreservesHistoricalReferences(t *testing.T) {
+	testPartitionedHistoricalReferences(t, "OutwardSplit")
+}
+
+func TestVPRightPreservesHistoricalReferences(t *testing.T) {
+	testPartitionedHistoricalReferences(t, "VPRight")
+}
+
+// Independent binary-string oracle covers length padding ties, both owners,
+// maximum paths and full version boundaries without using bitKeyBuilder.
+func TestSplitPVHotIdentityAndLayout(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.DepthThreshold = "SplitPVHot", 3
+	seen := make(map[string]bool)
+	for _, storage := range []bool{false, true} {
+		common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+		width, section := 53, 13
+		owners := []byte{0}
+		if storage {
+			width, section, owners = 29, 15, []byte{0, 255}
+		}
+		for _, owner := range owners {
+			common.AddrHashOfCurrentStorageTrie = common.BytesToHash(bytes.Repeat([]byte{owner}, 32))
+			for _, version := range []uint64{0, 1, 127, 128, 129, 0x12345678, 0xfffffffe, 0xffffffff} {
+				for depth := 0; depth <= width; depth++ {
+					for pattern := byte(0); pattern <= 1; pattern++ {
+						if depth == 0 && pattern == 1 {
+							continue
+						}
+						path := bytes.Repeat([]byte{pattern * 15}, depth)
+						cold := !storage && depth <= 3
+						padded := strings.Repeat(fmt.Sprintf("%04b", pattern*15), depth) + strings.Repeat("0", (width-depth)*4)
+						prefix := "0" + fmt.Sprintf("%032b%04b", version, section)
+						if storage {
+							prefix += strings.Repeat(fmt.Sprintf("%08b", owner), 12)
+						}
+						bits := prefix + padded + fmt.Sprintf("%07b", depth)
+						if cold {
+							bits = "1" + fmt.Sprintf("%04b", section) + padded + fmt.Sprintf("%032b%07b", version, depth)
+						}
+						x, ok := new(big.Int).SetString(bits, 2)
+						if !ok || len(bits) != 256 {
+							t.Fatal("invalid oracle")
+						}
+						want := x.FillBytes(make([]byte, 32))
+						got, err := modifyStructuredKey(version, common.TrieNodeData{Path: path, Depth: 99})
+						if err != nil || !bytes.Equal(got, want) || seen[string(got)] {
+							t.Fatalf("storage=%v version=%d depth=%d: got %x want %x err=%v", storage, version, depth, got, want, err)
+						}
+						seen[string(got)] = true
+						// Epoch is inactive, including invalid values for epoch schemes.
+						common.EpochSize = 0
+						again, err := modifyStructuredKey(version, common.TrieNodeData{Path: path})
+						if err != nil || !bytes.Equal(got, again) {
+							t.Fatal("key depends on epoch")
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestSplitPVHotThreeBlockOrdering(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.DepthThreshold = "SplitPVHot", 3
+	type entry struct {
+		name string
+		key  []byte
+	}
+	var entries []entry
+	for v := uint64(128); v <= 130; v++ {
+		for d := 0; d <= 4; d++ {
+			key, err := modifyStructuredKey(v, common.TrieNodeData{Path: bytes.Repeat([]byte{1}, d)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries = append(entries, entry{fmt.Sprintf("d%dv%d", d, v), key})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return bytes.Compare(entries[i].key, entries[j].key) < 0 })
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.name)
+	}
+	want := "d4v128 d4v129 d4v130 d0v128 d0v129 d0v130 d1v128 d1v129 d1v130 d2v128 d2v129 d2v130 d3v128 d3v129 d3v130"
+	if strings.Join(names, " ") != want {
+		t.Fatal(names)
+	}
+}
+
+func TestSplitPVHotInvalidInput(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.DepthThreshold = "SplitPVHot", 3
+	for _, path := range [][]byte{{16}, make([]byte, 54)} {
+		if _, err := modifyStructuredKey(1, common.TrieNodeData{Path: path}); err == nil {
+			t.Fatal("invalid path accepted")
+		}
+	}
+	common.HashingStateTrie, common.HashingStorageTrie = false, true
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{Path: make([]byte, 30)}); err == nil {
+		t.Fatal("storage overflow accepted")
+	}
+	if _, err := modifyStructuredKey(1<<32, common.TrieNodeData{}); err == nil {
+		t.Fatal("version overflow accepted")
+	}
+	for _, depth := range []int64{-1, 54} {
+		common.DepthThreshold = depth
+		if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+			t.Fatal("invalid cutoff accepted")
+		}
+	}
+	common.DepthThreshold = 3
+	common.HashingStateTrie = true
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+		t.Fatal("ambiguous side accepted")
+	}
+}
+
+func TestVPRightIdentityOrderAndOutwardBody(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod = "VPRight"
+	type pair struct{ vp, right []byte }
+	var pairs []pair
+	seen := make(map[string]bool)
+	for _, storage := range []bool{false, true} {
+		common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+		width, section := 53, "d"
+		owners := []byte{0}
+		if storage {
+			width, section, owners = 29, "f", []byte{0, 255}
+		}
+		for _, owner := range owners {
+			common.AddrHashOfCurrentStorageTrie = common.BytesToHash(bytes.Repeat([]byte{owner}, 32))
+			for _, v := range []uint64{0, 1, 127, 128, 129, 0x12345678, 0xfffffffe, 0xffffffff} {
+				for depth := 0; depth <= width; depth++ {
+					for _, nibble := range []byte{0, 15} {
+						if depth == 0 && nibble != 0 {
+							continue
+						}
+						path := bytes.Repeat([]byte{nibble}, depth)
+						x := section
+						if storage {
+							x += hex.EncodeToString(common.AddrHashOfCurrentStorageTrie[:12])
+						}
+						x += strings.Repeat(fmt.Sprintf("%x", nibble), depth) + strings.Repeat("0", width-depth)
+						vp, err := hex.DecodeString(fmt.Sprintf("%08x%s%02x", v, x, depth))
+						if err != nil {
+							t.Fatal(err)
+						}
+						// Independent integer transform of the original nibble-aligned VP key.
+						want := new(big.Int).SetBytes(vp)
+						want.Rsh(want, 8).Lsh(want, 6)
+						want.Or(want, big.NewInt(int64(depth))).SetBit(want, 255, 1)
+						common.EpochSize, common.DepthThreshold = 0, -100 // Inactive for VPRight.
+						got, err := modifyStructuredKey(v, common.TrieNodeData{Path: path})
+						if err != nil || len(got) != 32 || !bytes.Equal(got, want.FillBytes(make([]byte, 32))) {
+							t.Fatalf("identity/layout mismatch: storage=%v version=%d depth=%d err=%v", storage, v, depth, err)
+						}
+						if got[0] < 0x80 || got[0] > 0xbf || seen[string(got)] {
+							t.Fatal("namespace violation or identity collision")
+						}
+						seen[string(got)] = true
+						common.EpochSize, common.DepthThreshold = 128, 3
+						if storage || depth > 3 {
+							outward, err := modifyOutwardSplitKey(v, common.TrieNodeData{Path: path})
+							if err != nil || !bytes.Equal(got, outward) {
+								t.Fatal("VPRight differs from Outward body")
+							}
+						}
+						pairs = append(pairs, pair{vp: vp, right: got})
+					}
+				}
+			}
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool { return bytes.Compare(pairs[i].vp, pairs[j].vp) < 0 })
+	for i := 1; i < len(pairs); i++ {
+		if bytes.Compare(pairs[i-1].right, pairs[i].right) >= 0 {
+			t.Fatal("original VP order was not preserved")
+		}
+	}
+}
+
+func TestVPRightRejectsInvalidInput(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod = "VPRight"
+	common.HashingStateTrie, common.HashingStorageTrie = true, false
+	if _, err := modifyStructuredKey(1<<32, common.TrieNodeData{}); err == nil {
+		t.Fatal("accepted overflowing version")
+	}
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{Path: []byte{16}}); err == nil {
+		t.Fatal("accepted invalid path nibble")
+	}
+	common.HashingStorageTrie = true
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+		t.Fatal("accepted ambiguous trie side")
+	}
+	common.HashingStorageTrie, common.LenOfPathLen = false, 1
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+		t.Fatal("accepted incompatible field configuration")
+	}
+}
+
+func TestOutwardSplitIdentityAndLayout(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.DepthThreshold = "OutwardSplit", 3
+	// Independent binary-string oracle, including zero-width epoch/offset,
+	// full version range, padding ties, owner changes and maximum path lengths.
+	field := func(v uint64, w int) string {
+		if w == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%0*b", w, v)
+	}
+	for _, epoch := range []uint64{1, 2, 128, 1 << 32} {
+		common.EpochSize = epoch
+		w := bits.Len64(epoch - 1)
+		seen := make(map[string]bool)
+		for _, storage := range []bool{false, true} {
+			common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+			width, section := 53, uint64(13)
+			owners := []byte{0}
+			if storage {
+				width, section, owners = 29, 15, []byte{0, 255}
+			}
+			for _, owner := range owners {
+				common.AddrHashOfCurrentStorageTrie = common.BytesToHash(bytes.Repeat([]byte{owner}, 32))
+				for _, v := range []uint64{0, 1, 127, 128, 129, 0x12345678, 0xfffffffe, 0xffffffff} {
+					for depth := 0; depth <= width; depth++ {
+						for pattern := byte(0); pattern <= 1; pattern++ {
+							if depth == 0 && pattern == 1 {
+								continue
+							}
+							x := field(section, 4)
+							if storage {
+								x += strings.Repeat(field(uint64(owner), 8), 12)
+							}
+							x += strings.Repeat(field(uint64(pattern*15), 4), depth) + strings.Repeat("0", (width-depth)*4)
+							oracle := "10" + field(v, 32) + x + field(uint64(depth), 6)
+							cold := !storage && depth <= 3
+							if cold {
+								r := (uint64(1)<<(32-w) - 1) - (v >> w)
+								oracle = "00" + field(r, 32-w) + x + field(v&(epoch-1), w) + field(uint64(depth), 6)
+							}
+							n, ok := new(big.Int).SetString(oracle, 2)
+							if !ok || len(oracle) != 256 {
+								t.Fatal("oracle width")
+							}
+							got, err := modifyStructuredKey(v, common.TrieNodeData{Path: bytes.Repeat([]byte{pattern * 15}, depth), Depth: 99})
+							if err != nil || !bytes.Equal(got, n.FillBytes(make([]byte, 32))) || seen[string(got)] {
+								t.Fatalf("epoch=%d storage=%v v=%d depth=%d got=%x err=%v", epoch, storage, v, depth, got, err)
+							}
+							seen[string(got)] = true
+							if (cold && got[0] >= 0x40) || (!cold && (got[0] < 0x80 || got[0] > 0xbf)) {
+								t.Fatal("namespace ordering lost")
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestOutwardSplitCodeBoundaryAndL0Range(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.EpochSize, common.DepthThreshold = "OutwardSplit", 128, 3
+	key := func(v uint64, d int, nibble byte) []byte {
+		k, err := modifyStructuredKey(v, common.TrieNodeData{Path: bytes.Repeat([]byte{nibble}, d)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	code := append([]byte{'c'}, bytes.Repeat([]byte{0xff}, 32)...)
+	newCold, oldCold := key(256, 3, 15), key(255, 3, 0)
+	oldBody, newBody := key(255, 4, 15), key(256, 4, 0)
+	ordered := [][]byte{newCold, oldCold, code, oldBody, newBody}
+	for i := 1; i < len(ordered); i++ {
+		if bytes.Compare(ordered[i-1], ordered[i]) >= 0 {
+			t.Fatal("outward growth condition")
+		}
+	}
+	// The whole new mixed L0 range still covers BOTH old classes.
+	if !(bytes.Compare(newCold, oldBody) < 0 && bytes.Compare(oldCold, newBody) < 0) {
+		t.Fatal("L0 overlap counterexample")
+	}
+	// Within an epoch the same path's revisions remain contiguous by u.
+	if !(bytes.Compare(key(128, 3, 0), key(129, 3, 0)) < 0 && bytes.Compare(key(129, 3, 0), key(128, 3, 15)) < 0) {
+		t.Fatal("path/revision order lost")
+	}
+}
+
+func TestOutwardSplitRejectsInvalidInput(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	common.ModifyHashMethod, common.EpochSize, common.DepthThreshold = "OutwardSplit", 128, 3
+	for _, path := range [][]byte{{16}, make([]byte, 54)} {
+		if _, err := modifyStructuredKey(1, common.TrieNodeData{Path: path}); err == nil {
+			t.Fatal("invalid state path accepted")
+		}
+	}
+	common.HashingStateTrie, common.HashingStorageTrie = false, true
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{Path: make([]byte, 30)}); err == nil {
+		t.Fatal("storage path overflow accepted")
+	}
+	if _, err := modifyStructuredKey(1<<32, common.TrieNodeData{}); err == nil {
+		t.Fatal("version overflow accepted")
+	}
+	for _, epoch := range []uint64{0, 3, (1 << 32) + 1} {
+		common.EpochSize = epoch
+		if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+			t.Fatal("invalid epoch accepted")
+		}
+	}
+	common.EpochSize = 128
+	for _, depth := range []int64{-1, 54} {
+		common.DepthThreshold = depth
+		if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+			t.Fatal("invalid cutoff accepted")
+		}
+	}
+	common.DepthThreshold, common.HashingStateTrie = 3, true
+	if _, err := modifyStructuredKey(1, common.TrieNodeData{}); err == nil {
+		t.Fatal("ambiguous side accepted")
+	}
+}
+
+func TestOutwardStorageCodecAndDispatch(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	oldDepth := common.StorageDepthThreshold
+	defer func() { common.StorageDepthThreshold = oldDepth }()
+	common.ModifyHashMethod, common.DepthThreshold, common.StorageDepthThreshold = "OutwardStorage", 3, 1
+	field := func(v uint64, w int) string {
+		if w == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%0*b", w, v)
+	}
+	for _, epoch := range []uint64{1, 128, 1 << 32} {
+		common.EpochSize = epoch
+		w := bits.Len64(epoch - 1)
+		for _, storage := range []bool{false, true} {
+			common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+			maxPath := 53
+			if storage {
+				maxPath = 29
+			}
+			for _, owner := range []byte{0, 255} {
+				common.AddrHashOfCurrentStorageTrie = common.BytesToHash(bytes.Repeat([]byte{owner}, 32))
+				for _, branch := range []bool{false, true} {
+					var n node = &shortNode{Key: []byte{16}}
+					if branch {
+						n = &fullNode{}
+					}
+					for _, v := range []uint64{0, 1, 127, 128, 255, 256, 0xffffffff} {
+						for d := 0; d <= maxPath; d++ {
+							tnd := common.TrieNodeData{Path: bytes.Repeat([]byte{15}, d), Depth: 99}
+							got, err := modifyOutwardStorageKey(v, tnd, n)
+							if err != nil || len(got) != 32 {
+								t.Fatalf("codec: %x %v", got, err)
+							}
+							if !bytes.Equal(got, modifyHashV5(n, make(hashNode, 32), v, tnd)) {
+								t.Fatal("hash dispatch bypassed selector")
+							}
+							selected := storage && branch && d <= 1
+							if !selected {
+								want, err := modifyOutwardSplitKey(v, tnd)
+								if err != nil || !bytes.Equal(got, want) {
+									t.Fatal("unselected/account key changed")
+								}
+								continue
+							}
+							oracle := "00" + field((uint64(1)<<(32-w)-1)-(v>>w), 32-w) + "1111" + strings.Repeat(field(uint64(owner), 8), 12) + strings.Repeat("1111", d) + strings.Repeat("0", (29-d)*4) + field(v&(epoch-1), w) + field(uint64(d), 6)
+							value, ok := new(big.Int).SetString(oracle, 2)
+							if !ok || len(oracle) != 256 || !bytes.Equal(got, value.FillBytes(make([]byte, 32))) {
+								t.Fatal("cold storage field order/identity")
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	common.EpochSize, common.HashingStateTrie, common.HashingStorageTrie = 128, false, true
+	a, _ := modifyOutwardStorageKey(127, common.TrieNodeData{}, &fullNode{})
+	b, _ := modifyOutwardStorageKey(128, common.TrieNodeData{Path: []byte{15}}, &fullNode{})
+	if bytes.Compare(b, a) >= 0 || a[0] >= 0x40 {
+		t.Fatal("cold storage must grow left across epochs")
+	}
+	for _, cutoff := range []int64{-1, 30} {
+		common.StorageDepthThreshold = cutoff
+		if _, err := modifyOutwardStorageKey(1, common.TrieNodeData{}, &fullNode{}); err == nil {
+			t.Fatal("invalid storage cutoff")
+		}
+	}
+	common.StorageDepthThreshold = 1
+	if _, err := modifyOutwardStorageKey(1<<32, common.TrieNodeData{}, &fullNode{}); err == nil {
+		t.Fatal("version overflow")
+	}
+}
+
+// Force leaf -> extension/branch -> root branch -> leaf transitions across
+// epoch boundaries, then reopen every historical root from a fresh node cache.
+func TestOutwardStorageHistoricalShapeTransitions(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	oldDepth := common.StorageDepthThreshold
+	defer func() { common.StorageDepthThreshold = oldDepth }()
+	common.ModifyHashMethod, common.EpochSize, common.DepthThreshold, common.StorageDepthThreshold = "OutwardStorage", 128, 3, 1
+	common.HashingStateTrie, common.HashingStorageTrie = false, true
+	disk := rawdb.NewMemoryDatabase()
+	db := newTestDatabase(disk, rawdb.HashScheme)
+	keys := [][]byte{make([]byte, 32), make([]byte, 32), make([]byte, 32), make([]byte, 32)}
+	keys[0][0], keys[1][0], keys[2][0], keys[3][0], keys[3][1] = 0x10, 0x11, 0x20, 0x10, 0x10
+	versions := []uint64{126, 127, 128, 129, 255, 256}
+	sets := [][]int{{0}, {0, 1}, {0, 1, 2}, {0, 1, 2, 3}, {0}, {0, 1, 2, 3}}
+	parent := types.EmptyRootHash
+	var roots []common.Hash
+	var snapshots []map[string][]byte
+	seen := map[string]bool{}
+	for i, v := range versions {
+		tr, err := New(TrieID(parent), db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wanted := map[string][]byte{}
+		for j, key := range keys {
+			present := false
+			for _, index := range sets[i] {
+				if index == j {
+					present = true
+				}
+			}
+			if present {
+				value := bytes.Repeat([]byte{byte(v), byte(j + 1)}, 32)
+				tr.MustUpdate(key, value)
+				wanted[string(key)] = value
+			} else {
+				tr.MustDelete(key)
+			}
+		}
+		SetCurrentBlockNum(v)
+		root, nodes, err := tr.Commit(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for path, entry := range nodes.Nodes {
+			if entry.IsDeleted() {
+				continue
+			}
+			n, err := decodeNode(entry.Hash[:], entry.Blob)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, branch := n.(*fullNode)
+			cold := branch && len(path) <= 1
+			if (entry.Hash[0] < 0x40) != cold {
+				t.Fatalf("wrong class path=%x branch=%v key=%x", path, branch, entry.Hash)
+			}
+			seen[fmt.Sprintf("%T:%d", n, len(path))] = true
+		}
+		if err := db.Update(root, parent, trienode.NewWithNodeSet(nodes)); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Commit(root); err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range nodes.Nodes {
+			if !entry.IsDeleted() && !bytes.Equal(rawdb.ReadLegacyTrieNode(disk, entry.Hash), entry.Blob) {
+				t.Fatal("ID differs from DB key")
+			}
+		}
+		roots = append(roots, root)
+		snapshots = append(snapshots, wanted)
+		parent = root
+	}
+	for _, kind := range []string{"*trie.shortNode:0", "*trie.fullNode:0", "*trie.fullNode:1", "*trie.fullNode:2"} {
+		if !seen[kind] {
+			t.Fatalf("fixture missed %s: %v", kind, seen)
+		}
+	}
+	for i, root := range roots {
+		tr, err := New(TrieID(root), newTestDatabase(disk, rawdb.HashScheme))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range keys {
+			got, err := tr.Get(key)
+			if err != nil || !bytes.Equal(got, snapshots[i][string(key)]) {
+				t.Fatalf("historical version %d path %x: %x %v", versions[i], key, got, err)
+			}
+		}
+	}
+}
+
+// Independent run histories cannot be matched solely by (birth,path): a
+// delete/insert order can recreate an unchanged leaf after branch collapse.
+func TestStructuredBirthDependsOnEditOrder(t *testing.T) {
+	for _, scheme := range []string{"JMT_fixed", "TPV"} {
+		t.Run(scheme, func(t *testing.T) {
+			restore := setStructuredKeyTestGlobals()
+			defer restore()
+			common.ModifyHashMethod, common.EpochSize, common.DepthThreshold = scheme, 128, 3
+			var recreated [2]bool
+			for order := 0; order < 2; order++ {
+				disk := rawdb.NewMemoryDatabase()
+				db := newTestDatabase(disk, rawdb.HashScheme)
+				a, b, c := make([]byte, 32), make([]byte, 32), make([]byte, 32)
+				a[0], b[0], c[0] = 0x10, 0x11, 0x12
+				value := bytes.Repeat([]byte{7}, 40)
+				tr, err := New(TrieID(types.EmptyRootHash), db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tr.MustUpdate(a, value)
+				tr.MustUpdate(b, value)
+				SetCurrentBlockNum(1)
+				root, nodes, err := tr.Commit(false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = db.Update(root, types.EmptyRootHash, trienode.NewWithNodeSet(nodes)); err != nil {
+					t.Fatal(err)
+				}
+				if err = db.Commit(root); err != nil {
+					t.Fatal(err)
+				}
+				tr, err = New(TrieID(root), db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if order == 0 {
+					tr.MustDelete(b)
+					tr.MustUpdate(c, value)
+				} else {
+					tr.MustUpdate(c, value)
+					tr.MustDelete(b)
+				}
+				if !bytes.Equal(tr.MustGet(a), value) || !bytes.Equal(tr.MustGet(c), value) || len(tr.MustGet(b)) != 0 {
+					t.Fatal("different logical state")
+				}
+				SetCurrentBlockNum(2)
+				_, nodes, err = tr.Commit(false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				node, ok := nodes.Nodes[string([]byte{1, 0})]
+				recreated[order] = ok && !node.IsDeleted()
+				t.Logf("order=%d unchanged leaf A rewritten=%v", order, recreated[order])
+			}
+			if !recreated[0] || recreated[1] {
+				t.Fatalf("expected collapse/reexpand to recreate A only for delete-first, got %v", recreated)
+			}
+		})
+	}
 }

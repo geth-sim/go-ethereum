@@ -138,8 +138,11 @@ type StateDB struct {
 	StorageDeleted int
 
 	// additional measurements (jmlee)
-	AccountReadNum         int // how many account read occurs
-	NonExistAccountReadNum int // # of reads to find non-exist account
+	AccountReadNum         int    // how many account read occurs
+	NonExistAccountReadNum int    // # of reads to find non-exist account
+	StorageReadNum         int    // storage lookups that reach a snapshot or trie
+	NonExistStorageReadNum int    // storage lookups resolved to the canonical zero value
+	TrieNodesUpdated       uint64 // per-commit write count used by RunPath
 
 	// Testing hooks
 	onCommit func(states *triestate.Set) // Hook invoked when commit is performed
@@ -1180,6 +1183,7 @@ func (s *StateDB) handleDestruction(nodes *trienode.MergedNodeSet) (map[common.A
 // The associated block number of the state transition is also provided
 // for more chain context.
 func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, error) {
+	s.TrieNodesUpdated = 0
 	// Short circuit in case any database failure occurred earlier.
 	if s.dbErr != nil {
 		return common.Hash{}, fmt.Errorf("commit aborted due to earlier error: %v", s.dbErr)
@@ -1274,6 +1278,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		s.AccountUpdated, s.AccountDeleted = 0, 0
 		s.StorageUpdated, s.StorageDeleted = 0, 0
 	}
+	s.TrieNodesUpdated = uint64(accountTrieNodesUpdated + storageTrieNodesUpdated)
 	// If snapshotting is enabled, update the snapshot tree with this new version
 	if s.snap != nil {
 		start := time.Now()
@@ -1452,6 +1457,8 @@ func (s *StateDB) SaveMeters(simBlock *common.SimBlock) {
 	//
 	simBlock.AccountReads = s.AccountReads
 	simBlock.AccountReadNum = s.AccountReadNum
+	simBlock.StorageReadNum = s.StorageReadNum
+	simBlock.NonExistStorageReadNum = s.NonExistStorageReadNum
 	simBlock.NonExistAccountReadNum = s.NonExistAccountReadNum
 	simBlock.AccountHashes = s.AccountHashes
 	simBlock.AccountUpdates = s.AccountUpdates

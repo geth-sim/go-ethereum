@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -666,7 +667,12 @@ func (t *Trie) hashRoot() (node, node) {
 	var tnd common.TrieNodeData
 	CurrentTrie = t
 	hashed, cached := h.hash(t.root, true, tnd)
-	
+	// Child hashers have joined and their timings are folded into h. Publish
+	// the existing aggregate once per root, outside the parallel node hot path.
+	if h.modifyHashes != 0 {
+		atomic.AddInt64((*int64)(&common.ModifyHashes), int64(h.modifyHashes))
+	}
+
 	return hashed, cached
 }
 

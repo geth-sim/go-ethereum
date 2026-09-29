@@ -1,7 +1,6 @@
 package statesim
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,7 +99,6 @@ func connHandler(conn net.Conn) {
 			params := strings.Split(request, ",")
 			// fmt.Println("params:", params)
 			switch params[0] {
-
 			case "setDatabase":
 				// fmt.Println("execute setDatabase()")
 				deleteDisk, _ := strconv.ParseUint(params[1], 10, 64)
@@ -631,6 +629,7 @@ func connHandler(conn net.Conn) {
 					fmt.Println("stateDB.Commit() err:", err)
 					os.Exit(1)
 				}
+				trie.AdvanceRunPath(stateDB.TrieNodesUpdated)
 				simBlock.StateRoot = currentStateRoot
 
 				//
@@ -642,7 +641,10 @@ func connHandler(conn net.Conn) {
 					triedb := stateDB.Database().TrieDB()
 					if common.IsArchiveMode {
 						// If we're running an archive node, always flush
-						triedb.Commit(currentStateRoot, false)
+						if err := triedb.Commit(currentStateRoot, false); err != nil {
+							fmt.Println("triedb.Commit() err:", err)
+							os.Exit(1)
+						}
 					} else if isHardforkedBlock(currentBlockNum) || isHardforkedBlock(currentBlockNum+1) || currentBlockNum%1000000 == 0 {
 						// commit state trie when this block is hard forked (to copy the tries for simulation later)
 						// (note that this is not essential)
@@ -910,7 +912,8 @@ func connHandler(conn net.Conn) {
 				// 	leveldb.SaveMyReadStats(readStatFilePath+readStatFileName)
 				// }
 
-				// measure modifyHash()'s overhead (this is included in AccountHashes & StorageHashes)
+				// Key construction runs inside AccountHashes/StorageHashes. This sums
+				// per-node durations, which may overlap during parallel hashing.
 				simBlock.ModifyHashes = common.ModifyHashes
 				common.ModifyHashes = 0
 
@@ -1061,13 +1064,18 @@ func connHandler(conn net.Conn) {
 
 				// set file name
 				mapKeys := make([]string, 0)
-				for k, _ := range common.LevelDBStats {
+				for k := range common.LevelDBStats {
 					mapKeys = append(mapKeys, k)
+				}
+				if len(mapKeys) == 0 {
+					fmt.Println("  skip saveLevelDBStats: no sampled LevelDB stats")
+					response = []byte("success")
+					break
 				}
 				sort.Strings(mapKeys)
 				firstBlockNum := uint64(0)
 				lastBlockNum := common.LevelDBStats[mapKeys[len(mapKeys)-1]].BlockNum
-				fileName := "leveldb_stats_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + common.ModifyHashMethod + ".json"
+				fileName := "leveldb_stats_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + keySchemeFileLabel() + ".json"
 
 				// encoding map to json
 				var jsonData []byte
@@ -1124,7 +1132,7 @@ func connHandler(conn net.Conn) {
 				sort.Strings(mapKeys)
 				firstBlockNum := common.SimBlocks[mapKeys[0]].Number
 				lastBlockNum := common.SimBlocks[mapKeys[len(mapKeys)-1]].Number
-				fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + common.ModifyHashMethod + ".json"
+				fileName = "evm_simulation_result_" + common.GetSimulationTypeName() + "_" + strconv.FormatUint(firstBlockNum, 10) + "_" + strconv.FormatUint(lastBlockNum, 10) + "_" + keySchemeFileLabel() + ".json"
 
 				// Save one block at a time. Marshaling the entire map creates a
 				// multi-GB temporary buffer and can leave RSS high after checkpoints.
@@ -1165,9 +1173,18 @@ func connHandler(conn net.Conn) {
 					os.Exit(1)
 				}
 
-				// load SimBlocks
-				loadedSimBlocks := make(map[string]*common.SimBlock)
-				json.Unmarshal([]byte(file), &loadedSimBlocks)
+				// Load both the current envelope and legacy flat-map files.
+				results, legacy, err := decodeSimulationResultsJSON(file)
+				if err != nil {
+					fmt.Println("Error decoding simulation results:", err)
+					os.Exit(1)
+				}
+				if legacy {
+					fmt.Println("loaded legacy simulation result without config metadata")
+				} else {
+					fmt.Println("loaded simulation result schema:", results.SchemaVersion)
+				}
+				loadedSimBlocks := results.Blocks
 				common.SimBlocks = make(map[string]*common.SimBlock)
 				for blockNumStr, simBlock := range loadedSimBlocks {
 					if blockNumStr <= lastBlockNumToLoadStr {
@@ -1215,9 +1232,18 @@ func connHandler(conn net.Conn) {
 					os.Exit(1)
 				}
 
-				// load SimBlocks
-				loadedSimBlocks := make(map[string]*common.SimBlock)
-				json.Unmarshal([]byte(file), &loadedSimBlocks)
+				// Load both the current envelope and legacy flat-map files.
+				results, legacy, err := decodeSimulationResultsJSON(file)
+				if err != nil {
+					fmt.Println("Error decoding simulation results:", err)
+					os.Exit(1)
+				}
+				if legacy {
+					fmt.Println("loaded legacy simulation result without config metadata")
+				} else {
+					fmt.Println("loaded simulation result schema:", results.SchemaVersion)
+				}
+				loadedSimBlocks := results.Blocks
 
 				// set current state
 				latestSimBlock := loadedSimBlocks[lastBlockNumToLoadStr]
@@ -1601,63 +1627,6 @@ func getDirectorySizeV2(path string) (int64, error) {
 	return size, nil
 }
 
-func writeSimBlocksJSON(fileName string, mapKeys []string) error {
-	file, err := os.Create(simBlocksPath + fileName)
-	if err != nil {
-		return err
-	}
-	closeFile := true
-	defer func() {
-		if closeFile {
-			file.Close()
-		}
-	}()
-
-	writer := bufio.NewWriterSize(file, 1024*1024)
-
-	if _, err := writer.WriteString("{\n"); err != nil {
-		return err
-	}
-	for i, blockNumStr := range mapKeys {
-		keyData, err := json.Marshal(blockNumStr)
-		if err != nil {
-			return err
-		}
-		blockData, err := json.MarshalIndent(common.SimBlocks[blockNumStr], "  ", "  ")
-		if err != nil {
-			return err
-		}
-		if _, err := writer.WriteString("  "); err != nil {
-			return err
-		}
-		if _, err := writer.Write(keyData); err != nil {
-			return err
-		}
-		if _, err := writer.WriteString(": "); err != nil {
-			return err
-		}
-		if _, err := writer.Write(blockData); err != nil {
-			return err
-		}
-		if i != len(mapKeys)-1 {
-			if _, err := writer.WriteString(","); err != nil {
-				return err
-			}
-		}
-		if _, err := writer.WriteString("\n"); err != nil {
-			return err
-		}
-	}
-	if _, err := writer.WriteString("}"); err != nil {
-		return err
-	}
-	if err := writer.Flush(); err != nil {
-		return err
-	}
-	closeFile = false
-	return file.Close()
-}
-
 // actual main() function
 func StartStateSimulator() {
 
@@ -1703,6 +1672,22 @@ func StartStateSimulator() {
 	// wait for requests
 	for {
 		fmt.Println("  Modify Hash method:", common.ModifyHashMethod)
+		if common.ModifyHashMethod == "EpochPath" || common.ModifyHashMethod == "DepthEpoch" || common.ModifyHashMethod == "TPV" || common.ModifyHashMethod == "OutwardSplit" || common.ModifyHashMethod == "OutwardStorage" {
+			fmt.Println("  EpochSize:", common.EpochSize)
+		}
+		if common.ModifyHashMethod == "DepthSplit" || common.ModifyHashMethod == "DepthEpoch" || common.ModifyHashMethod == "TPV" || common.ModifyHashMethod == "SplitPVHot" || common.ModifyHashMethod == "OutwardSplit" || common.ModifyHashMethod == "OutwardStorage" {
+			fmt.Println("  DepthThreshold:", common.DepthThreshold)
+		}
+		if common.ModifyHashMethod == "OutwardStorage" {
+			fmt.Println("  StorageDepthThreshold (branch-only):", common.StorageDepthThreshold)
+		}
+		if common.ModifyHashMethod == "ShardVP" {
+			fmt.Println("  ShardOwnerPrefixLen:", common.ShardOwnerPrefixLen)
+		}
+		if common.ModifyHashMethod == "ATileVP" {
+			fmt.Println("  ATileBlocks:", common.ATileBlocks)
+			fmt.Println("  ATileStoragePathPrefixLen:", common.ATileStoragePathPrefixLen)
+		}
 		fmt.Println("  IsArchiveMode:", common.IsArchiveMode)
 		fmt.Println("  ReadAllChildNodes:", common.ReadAllChildNodes)
 		fmt.Println("  MyHash length:", common.AdditionalByteLen)

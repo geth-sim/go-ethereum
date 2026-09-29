@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/hashdb"
 	"github.com/ethereum/go-ethereum/triedb/pathdb"
@@ -55,6 +56,12 @@ var (
 	leveldbReadonly  = false
 	// # of max open files for leveldb (Geth default: 524288)
 	leveldbHandles = 524288
+	// triedb options
+	triePreimages    = false
+	pathStateHistory = uint64(90000)
+	// actual setDatabase request used for this run
+	databaseDeleteDisk = false
+	databaseConfigured = false
 	// disk to store trie nodes (leveldb, pebble, or memorydb)
 	diskdb   ethdb.KeyValueStore
 	frdiskdb ethdb.Database
@@ -162,6 +169,10 @@ func openPebbleDB(dbPath string, deleteDisk bool) (ethdb.KeyValueStore, ethdb.Da
 
 // set disk, stateDB, trieDB
 func setDatabase(deleteDisk bool) {
+	databaseDeleteDisk = deleteDisk
+	databaseConfigured = false
+	trie.ResetRunPath()
+	common.ModifyHashes = 0
 
 	// set flush interval for non-archive mode (default: 60 mins)
 	myFlushInterval.Store(int64(60 * time.Minute))
@@ -200,333 +211,8 @@ func setDatabase(deleteDisk bool) {
 		}
 	}
 
-	//
-	// set modifyHash options
-	//
-	if common.ModifyHashMethod == "" {
-		// do nothing
-
-	} else if common.ModifyHashMethod == "JMT" {
-
-		//
-		// v1 -> state/storage key: version 8 + path 54 + path len 2
-		// infeasible design: key collision occurs between state trie node and storage trie node that have the same path
-		//
-
-		//
-		// v2 -> state/storage key: version 8 + path 46 + nodeHash 10
-		//
-
-		// version
-		common.VersionLength = 8
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 46
-		common.FixedPathLength = true
-		common.PathPaddingAtEnd = true
-		common.AppendPathFirst = false
-		common.AppendPathLen = false
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 54
-
-		// section byte
-		common.AppendTrieType = false
-
-		// CA's addrHash
-		common.AppendContractAddrHash = false
-		common.AddrHashPrefixLen = 0
-
-	} else if common.ModifyHashMethod == "JMT_fixed" {
-
-		// TODO(jmlee): is this optimal for JMT?
-
-		// state key: version 8 + section 1 + path 53 + path len 2
-		// storage key: version 8 + section 1 + addrHash 24 + path 29 + path len 2
-
-		// version
-		common.VersionLength = 8
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 53
-		common.FixedPathLength = true
-		common.PathPaddingAtEnd = true
-		common.AppendPathFirst = false
-		common.AppendPathLen = true
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 62
-
-		// section byte
-		common.AppendTrieType = true
-
-		// CA's addrHash
-		common.AppendContractAddrHash = true
-		common.AddrHashPrefixLen = 24
-
-	} else if common.ModifyHashMethod == "JMT_balanced" {
-
-		//
-		// v2 -> state/storage key: version 27 + path 27 + nodeHash 10
-		//
-
-		// version
-		common.VersionLength = 27
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 27
-		common.FixedPathLength = true
-		common.PathPaddingAtEnd = true
-		common.AppendPathFirst = false
-		common.AppendPathLen = false
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 54
-
-		// section byte
-		common.AppendTrieType = false
-
-		// CA's addrHash
-		common.AppendContractAddrHash = false
-		common.AddrHashPrefixLen = 0
-
-	} else if common.ModifyHashMethod == "PrefixTree" {
-
-		//
-		// v1: state/storage key: path 48 + version 8 + nodeHash 8
-		// infeasible design: error at block 5,871,711 / tx index 35 -> gas limit reached
-		//
-
-		//
-		// v2: state/storage key: path 46 + version 8 + nodeHash 10 -> okay until 6M block
-		//
-
-		// version
-		common.VersionLength = 8
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 46
-		common.FixedPathLength = true
-		common.PathPaddingAtEnd = true
-		common.AppendPathFirst = true
-		common.AppendPathLen = false
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 54
-
-		// section byte
-		common.AppendTrieType = false
-
-		// CA's addrHash
-		common.AppendContractAddrHash = false
-		common.AddrHashPrefixLen = 0
-
-	} else if common.ModifyHashMethod == "PrefixTree_balanced" {
-
-		//
-		// v2: state/storage key: path 27 + version 27 + nodeHash 10 -> okay until 6M block
-		//
-
-		// version
-		common.VersionLength = 27
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 27
-		common.FixedPathLength = true
-		common.PathPaddingAtEnd = true
-		common.AppendPathFirst = true
-		common.AppendPathLen = false
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 54
-
-		// section byte
-		common.AppendTrieType = false
-
-		// CA's addrHash
-		common.AppendContractAddrHash = false
-		common.AddrHashPrefixLen = 0
-
-	} else if common.ModifyHashMethod == "PrefixTree_fixed" {
-
-		// TODO(jmlee): is this optimal for PrefixTree?
-
-		// state key: section 1 + path 53 + version 8 + path len 2
-		// storage key: section 1 + addrHash 24 + path 29 + version 8 + path len 2
-
-		// version
-		common.VersionLength = 8
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 53
-		common.FixedPathLength = true
-		common.PathPaddingAtEnd = true
-		common.AppendPathFirst = true
-		common.AppendPathLen = true
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 0
-
-		// section byte
-		common.AppendTrieType = true
-
-		// CA's addrHash
-		common.AppendContractAddrHash = true
-		common.AddrHashPrefixLen = 24
-
-	} else if common.ModifyHashMethod == "HalfPath" {
-
-		// state key: section 1 + path 24 + nodeHash 37 + path len 2
-		// storage key: section 1 + addrHash 24 + path 24 + nodeHash 13 + path len 2
-
-		// version
-		common.VersionLength = 0
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 24
-		common.FixedPathLength = true
-		common.PathPaddingAtEnd = true
-		common.AppendPathFirst = true
-		common.AppendPathLen = true
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 0
-
-		// section byte
-		common.AppendTrieType = true
-
-		// CA's addrHash
-		common.AppendContractAddrHash = true
-		common.AddrHashPrefixLen = 24
-
-	} else if common.ModifyHashMethod == "PBSS" {
-
-		// activate PBSS options
-		common.IsArchiveMode = false
-		common.IsPathScheme = true
-
-		// original hash-based Ethereum
-
-		// version
-		common.VersionLength = 0
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 0
-		common.FixedPathLength = true
-		common.PathPaddingAtEnd = true
-		common.AppendPathFirst = true
-		common.AppendPathLen = false
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 0
-
-		// section byte
-		common.AppendTrieType = false
-
-		// CA's addrHash
-		common.AppendContractAddrHash = false
-		common.AddrHashPrefixLen = 0
-
-		//
-		// TODO(jmlee): Geth does not work properly in situations where nodes with the same node hash are created in several blocks
-		// just activate common.IsPathScheme option or find other proper ways
-		//
-
-		// // state key: section 1 + path 24 + 0-padding 37 + path len 2
-		// // storage key: section 1 + addrHash 24 + path 24 + 0-padding 13 + path len 2
-
-		// // version
-		// common.VersionLength = 0
-		// common.EnableVersionPadding = true
-
-		// // path
-		// common.PathLength = 24
-		// common.FixedPathLength = true
-		// common.PathPaddingAtEnd = true
-		// common.AppendPathFirst = true
-		// common.AppendPathLen = true
-		// common.LenOfPathLen = 2
-
-		// //
-		// common.LastPaddingBound = 62
-
-		// // section byte
-		// common.AppendTrieType = true
-
-		// // CA's addrHash
-		// common.AppendContractAddrHash = true
-		// common.AddrHashPrefixLen = 24
-
-	} else if common.ModifyHashMethod == "TH" {
-
-		// state/storage key: version 8 + nodeHash 56
-
-		// version
-		common.VersionLength = 8
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 0
-		common.FixedPathLength = false
-		common.PathPaddingAtEnd = false
-		common.AppendPathFirst = false
-		common.AppendPathLen = false
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 0
-
-		// section byte
-		common.AppendTrieType = false
-
-		// CA's addrHash
-		common.AppendContractAddrHash = false
-		common.AddrHashPrefixLen = 0
-
-	} else if common.ModifyHashMethod == "none" {
-
-		// original hash-based Ethereum
-
-		// version
-		common.VersionLength = 0
-		common.EnableVersionPadding = true
-
-		// path
-		common.PathLength = 0
-		common.FixedPathLength = true
-		common.PathPaddingAtEnd = true
-		common.AppendPathFirst = true
-		common.AppendPathLen = false
-		common.LenOfPathLen = 2
-
-		//
-		common.LastPaddingBound = 0
-
-		// section byte
-		common.AppendTrieType = false
-
-		// CA's addrHash
-		common.AppendContractAddrHash = false
-		common.AddrHashPrefixLen = 0
-
-	} else {
-		fmt.Println("ERROR: unknown ModifyHashMethod:", common.ModifyHashMethod)
+	if err := configureKeyScheme(); err != nil {
+		fmt.Println("ERROR: invalid key scheme configuration:", err)
 		os.Exit(1)
 	}
 
@@ -609,11 +295,11 @@ func setDatabase(deleteDisk bool) {
 	//
 	// set triedb
 	//
-	triedbConfig := &triedb.Config{Preimages: false} // TODO(jmlee): dafault is false, push this later
+	triedbConfig := &triedb.Config{Preimages: triePreimages} // TODO(jmlee): dafault is false, push this later
 	if common.IsPathScheme {
 		fmt.Println("set path based scheme")
 		triedbConfig.PathDB = &pathdb.Config{
-			StateHistory:   90000, // (default = 90,000 blocks, 0 = entire chain)
+			StateHistory:   pathStateHistory, // (default = 90,000 blocks, 0 = entire chain)
 			CleanCacheSize: trieCacheSize * 1024 * 1024,
 			// TODO(jmlee): check this is right, 얘는 아마 64 ~ 256 MB 까지밖에 설정이 안되는듯함, sanitize() 함수 확인해보기
 			//   메인넷에서 얼마로 설정되나 확인해보기
@@ -639,6 +325,7 @@ func setDatabase(deleteDisk bool) {
 	// reset cache stats
 	realleveldb.ResetCacheStat(0)
 
+	databaseConfigured = true
 	fmt.Println("setDatabase() finished")
 }
 
@@ -697,4 +384,106 @@ func (mcc *MyChainContext) GetHeader(blockHash common.Hash, blockNum uint64) *ty
 type UncleInfo struct {
 	Coinbase    common.Address
 	UncleHeight *big.Int
+}
+
+// configureKeyScheme is the single place that assigns codec options. Result
+// metadata records these effective values directly, without a second preset table.
+func configureKeyScheme() error {
+	method := common.ModifyHashMethod
+	if method == "" { // preserve the original manual-option mode
+		return nil
+	}
+	common.VersionLength, common.PathLength, common.LastPaddingBound = 0, 0, 0
+	common.EnableVersionPadding, common.FixedPathLength, common.PathPaddingAtEnd = true, true, true
+	common.AppendPathFirst, common.AppendPathLen = false, false
+	common.LenOfPathLen = 2
+	common.AppendTrieType, common.AppendContractAddrHash, common.AddrHashPrefixLen = false, false, 0
+	switch method {
+	case "JMT", "PrefixTree", "JMT_balanced", "PrefixTree_balanced":
+		common.VersionLength, common.PathLength, common.LastPaddingBound = 8, 46, 54
+		if method == "JMT_balanced" || method == "PrefixTree_balanced" {
+			common.VersionLength, common.PathLength = 27, 27
+		}
+		common.AppendPathFirst = method == "PrefixTree" || method == "PrefixTree_balanced"
+	case "JMT_fixed", "PrefixTree_fixed", "EpochPath", "TPV", "SplitPVHot", "OutwardSplit", "OutwardStorage", "VPRight", "DepthSplit", "DepthEpoch", "ShardVP", "DualVP", "RunPath", "ForestVP", "ATileVP":
+		common.VersionLength, common.PathLength = 8, 53
+		common.AppendPathLen, common.AppendTrieType, common.AppendContractAddrHash = true, true, true
+		common.AddrHashPrefixLen = 24
+		common.AppendPathFirst = method == "PrefixTree_fixed"
+		if method == "JMT_fixed" {
+			common.LastPaddingBound = 62
+		}
+		if method == "RunPath" {
+			common.PathLength = 45
+		}
+	case "HalfPath":
+		common.PathLength, common.AddrHashPrefixLen = 24, 24
+		common.AppendPathFirst, common.AppendPathLen, common.AppendTrieType, common.AppendContractAddrHash = true, true, true, true
+	case "PBSS", "none":
+		common.AppendPathFirst = true
+		if method == "PBSS" {
+			common.IsArchiveMode, common.IsPathScheme = false, true
+		}
+	case "TH":
+		common.VersionLength = 8
+		common.FixedPathLength, common.PathPaddingAtEnd = false, false
+	default:
+		return fmt.Errorf("unknown ModifyHashMethod %q", method)
+	}
+	return validateKeySchemeOptions(currentKeySchemeOptions())
+}
+
+func validateKeySchemeOptions(actual keySchemeOptions) error {
+	if actual.ModifyHashMethod == "" {
+		return nil
+	}
+	if actual.ModifyHashMethod == "EpochPath" || actual.ModifyHashMethod == "TPV" || actual.ModifyHashMethod == "OutwardSplit" || actual.ModifyHashMethod == "OutwardStorage" {
+		if _, err := common.EpochOffsetBits(actual.EpochSize); err != nil {
+			return err
+		}
+	}
+	if (actual.ModifyHashMethod == "TPV" || actual.ModifyHashMethod == "SplitPVHot" || actual.ModifyHashMethod == "OutwardSplit" || actual.ModifyHashMethod == "OutwardStorage") && (actual.DepthThreshold < 0 || actual.DepthThreshold > 53) {
+		return fmt.Errorf("TPV/SplitPVHot/OutwardSplit DepthThreshold must be in [0, 53], got %d", actual.DepthThreshold)
+	}
+	if actual.ModifyHashMethod == "OutwardStorage" && (actual.StorageDepthThreshold < 0 || actual.StorageDepthThreshold > 29) {
+		return fmt.Errorf("OutwardStorage StorageDepthThreshold must be in [0, 29], got %d", actual.StorageDepthThreshold)
+	}
+	if actual.ModifyHashMethod == "DepthEpoch" {
+		if err := validateEpochSize(actual.EpochSize); err != nil {
+			return err
+		}
+	}
+	if actual.ModifyHashMethod == "ShardVP" {
+		switch actual.ShardOwnerPrefixLen {
+		case 1, 2, 4:
+		default:
+			return fmt.Errorf("ShardOwnerPrefixLen must be one of 1, 2, or 4 hex nibbles, got %d", actual.ShardOwnerPrefixLen)
+		}
+	}
+	if actual.ModifyHashMethod == "RunPath" && actual.RunPathTargetNodes == 0 {
+		return fmt.Errorf("RunPathTargetNodes must be nonzero")
+	}
+	if actual.ModifyHashMethod == "ATileVP" {
+		if actual.ATileBlocks == 0 || actual.ATileBlocks > uint64(1)<<32 || actual.ATileBlocks&(actual.ATileBlocks-1) != 0 {
+			return fmt.Errorf("ATileBlocks must be a power of two in [1, 2^32], got %d", actual.ATileBlocks)
+		}
+		if actual.ATileStoragePathPrefixLen < 0 || actual.ATileStoragePathPrefixLen > 29 {
+			return fmt.Errorf("ATileStoragePathPrefixLen must be in [0, 29], got %d", actual.ATileStoragePathPrefixLen)
+		}
+	}
+	return nil
+}
+
+func validateEpochSize(epochSize uint64) error {
+	original := epochSize
+	if epochSize == 0 || epochSize > uint64(1)<<32 {
+		return fmt.Errorf("EpochSize must be a power of 16 in [1, 2^32], got %d", epochSize)
+	}
+	for epochSize > 1 {
+		if epochSize%16 != 0 {
+			return fmt.Errorf("EpochSize must be a power of 16, got %d", original)
+		}
+		epochSize /= 16
+	}
+	return nil
 }

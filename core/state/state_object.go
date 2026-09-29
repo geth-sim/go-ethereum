@@ -188,6 +188,9 @@ func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
 	if _, destructed := s.db.stateObjectsDestruct[s.address]; destructed {
 		return common.Hash{}
 	}
+	if metrics.EnabledExpensive {
+		s.db.StorageReadNum++
+	}
 	// If no live objects are available, attempt to use snapshots
 	var (
 		enc   []byte
@@ -225,6 +228,9 @@ func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
 			return common.Hash{}
 		}
 		value.SetBytes(val)
+	}
+	if metrics.EnabledExpensive && value == (common.Hash{}) {
+		s.db.NonExistStorageReadNum++
 	}
 	s.originStorage[key] = value
 	return value
