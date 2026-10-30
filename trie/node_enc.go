@@ -22,7 +22,20 @@ import (
 
 func nodeToBytes(n node) []byte {
 	w := rlp.NewEncoderBuffer(nil)
+	a := nodeAuthentication(n)
+	var envelope int
+	if a != nil {
+		if a.pending {
+			panic("persisting unfinished authentication")
+		}
+		envelope = w.List()
+	}
 	n.encode(w)
+	if a != nil {
+		w.WriteBytes(a.state)
+		w.WriteBytes([]byte{1, a.suite, a.kind})
+		w.ListEnd(envelope)
+	}
 	result := w.ToBytes()
 	w.Flush()
 	return result

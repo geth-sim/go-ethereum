@@ -28,10 +28,14 @@ import (
 	"math/bits"
 	"math/rand"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/quick"
+	"time"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ethereum/go-ethereum/common"
@@ -40,7 +44,9 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie/incauth"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	triedbdatabase "github.com/ethereum/go-ethereum/triedb/database"
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
 )
@@ -2660,5 +2666,1434 @@ func TestStructuredBirthDependsOnEditOrder(t *testing.T) {
 				t.Fatalf("expected collapse/reexpand to recreate A only for delete-first, got %v", recreated)
 			}
 		})
+	}
+}
+
+// The auth reference trie delegates keys to the existing codec verbatim. This
+// tests compatibility of locators, not the EVM adapter or original inline policy.
+func TestIncrementalAuthWithOutwardCodec(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	oldStorageDepth := common.StorageDepthThreshold
+	defer func() { common.StorageDepthThreshold = oldStorageDepth }()
+	common.ModifyHashMethod = "OutwardStorage"
+	common.EpochSize, common.DepthThreshold, common.StorageDepthThreshold = 128, 3, 2
+	common.AddrHashOfCurrentStorageTrie = crypto.Keccak256Hash([]byte("incauth-test-owner"))
+	for _, storage := range []bool{false, true} {
+		common.HashingStateTrie, common.HashingStorageTrie = !storage, storage
+		kind := incauth.Account
+		if storage {
+			kind = incauth.Storage
+		}
+		s, err := incauth.NewScheme(incauth.Ristretto255, kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db := rawdb.NewMemoryDatabase()
+		encode := func(version uint32, path []byte, kind uint8) (incauth.Locator, error) {
+			var shape node = &shortNode{}
+			if kind == incauth.BranchNode {
+				shape = &fullNode{}
+			}
+			k, err := modifyOutwardStorageKey(uint64(version), common.TrieNodeData{Path: path}, shape)
+			var locator incauth.Locator
+			copy(locator[:], k)
+			return locator, err
+		}
+		layout := "OutwardStorage-E128-A3-S2B"
+		tr, err := incauth.New(db, s, incauth.Incremental, layout, encode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var keys [64][32]byte
+		for i := range keys {
+			keys[i] = [32]byte(crypto.Keccak256Hash([]byte(fmt.Sprintf("auth-outward-%d", i))))
+			if err = tr.Update(keys[i], []byte{byte(i)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		old, err := tr.Commit(127)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr, err = incauth.Open(db, s, incauth.Incremental, layout, encode, 127)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = tr.Update(keys[7], []byte("new value")); err != nil {
+			t.Fatal(err)
+		}
+		next, err := tr.Commit(128)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if old.Commitment == next.Commitment {
+			t.Fatal("root did not change")
+		}
+		if c, err := tr.Audit(); err != nil || c != next.Commitment {
+			t.Fatalf("audit storage=%v: %v", storage, err)
+		}
+		p, err := tr.Prove(keys[7])
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, present, err := incauth.Verify(s, next.Commitment, keys[7], p)
+		if err != nil || !present || string(v) != "new value" {
+			t.Fatalf("proof: %v", err)
+		}
+		history, err := incauth.Open(db, s, incauth.Incremental, layout, encode, 127)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, present, err = history.Get(keys[7])
+		if err != nil || !present || !bytes.Equal(v, []byte{7}) {
+			t.Fatal("historical locator changed")
+		}
+		var left, right int
+		it := db.NewIterator(nil, nil)
+		for it.Next() {
+			k := it.Key()
+			if len(k) != 32 {
+				continue
+			}
+			switch k[0] >> 6 {
+			case 0:
+				left++
+			case 2:
+				right++
+			default:
+				t.Fatalf("unexpected trie namespace %x", k)
+			}
+		}
+		if err = it.Error(); err != nil {
+			t.Fatal(err)
+		}
+		it.Release()
+		if left == 0 || (storage && right == 0) {
+			t.Fatalf("storage=%v missing namespaces: %d %d", storage, left, right)
+		}
+		t.Logf("storage=%v: %d left / %d right node records, epoch-boundary history/proof verified", storage, left, right)
+		db.Close()
+	}
+}
+
+// Exercise the real geth insert/delete/hash/commit/decoder, not the reference
+// trie. Rebuild from final KVs with the independent reference implementation.
+func TestGethIncrementalAuthentication(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	oldAuth, oldMode, oldDepth := common.TrieAuthentication, common.TrieAuthMode, common.StorageDepthThreshold
+	oldMeasure := common.MeasureChildStats
+	defer func() {
+		common.TrieAuthentication, common.TrieAuthMode, common.StorageDepthThreshold = oldAuth, oldMode, oldDepth
+		common.MeasureChildStats = oldMeasure
+	}()
+	common.MeasureChildStats = true
+	common.ModifyHashMethod = "OutwardStorage"
+	common.EpochSize = 128
+	common.DepthThreshold = 3
+	common.StorageDepthThreshold = 2
+	common.HashingStateTrie = false
+	common.HashingStorageTrie = true
+	owner := crypto.Keccak256Hash([]byte("geth-auth-owner"))
+	common.AddrHashOfCurrentStorageTrie = owner
+	suites := []string{"ristretto255", "p256", "keccak"}
+	if _, err := incauth.NewScheme(incauth.GLS254, incauth.Storage); err == nil {
+		suites = append(suites, "gls254")
+	}
+	for _, suite := range suites {
+		for _, mode := range []string{"incremental", "full"} {
+			if suite == "keccak" && mode != "full" {
+				continue
+			}
+			t.Run(suite+"/"+mode, func(t *testing.T) {
+				common.TrieAuthentication, common.TrieAuthMode = suite, mode
+				disk := rawdb.NewMemoryDatabase()
+				db := newTestDatabase(disk, rawdb.HashScheme)
+				tr, err := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = tr.configureAuthentication(); err != nil {
+					t.Fatal(err)
+				}
+				var keys [64][32]byte
+				values := map[[32]byte][]byte{}
+				for i := range keys {
+					keys[i] = [32]byte(crypto.Keccak256Hash([]byte(fmt.Sprintf("geth-key-%d", i))))
+				}
+				check := func() {
+					t.Helper()
+					c := tr.AuthenticationRoot()
+					aud, err := tr.AuditAuthentication()
+					if err != nil || aud != c {
+						t.Fatalf("audit %v", err)
+					}
+					ref, err := incauth.New(rawdb.NewMemoryDatabase(), tr.auth.scheme, incauth.Incremental, "oracle", func(v uint32, p []byte, k uint8) (incauth.Locator, error) {
+						return incauth.Locator(crypto.Keccak256Hash(p)), nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					// Full Keccak reference does not support incremental updates.
+					if suite == "keccak" {
+						ref, err = incauth.New(rawdb.NewMemoryDatabase(), tr.auth.scheme, incauth.Full, "oracle", nilEncoderForAuthTest)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					for k, v := range values {
+						if err := ref.Update(k, v); err != nil {
+							t.Fatal(err)
+						}
+					}
+					want, err := ref.Root()
+					if err != nil || common.Hash(want) != c {
+						t.Fatalf("reference root mismatch got=%x want=%x err=%v", c, want, err)
+					}
+					for _, idx := range []int{0, 7, 31, 63} {
+						p, err := tr.AuthenticationProof(keys[idx][:])
+						if err != nil {
+							t.Fatal(err)
+						}
+						v, exists, err := incauth.Verify(tr.auth.scheme, incauth.Commitment(c), keys[idx], p)
+						want, ok := values[keys[idx]]
+						if err != nil || ok != exists || !bytes.Equal(v, want) {
+							t.Fatalf("proof %d: %v", idx, err)
+						}
+					}
+				}
+				for round := 0; round < 7; round++ {
+					SetCurrentBlockNum(uint64(126 + round))
+					limit := 64
+					if round > 0 {
+						limit = 20
+					}
+					for j := 0; j < limit; j++ {
+						i := (j*7 + round) % 64
+						k := keys[i]
+						v := []byte(fmt.Sprintf("value-%d-%d", round, j))
+						if round > 0 && j%4 == 0 {
+							if err := tr.Delete(k[:]); err != nil {
+								t.Fatal(err)
+							}
+							delete(values, k)
+						} else {
+							if err := tr.Update(k[:], v); err != nil {
+								t.Fatal(err)
+							}
+							values[k] = v
+						}
+					}
+					check()
+					saved := tr.Copy()
+					old := saved.AuthenticationRoot()
+					k := keys[7]
+					v := []byte(fmt.Sprintf("second-update-%d", round))
+					if err := tr.Update(k[:], v); err != nil {
+						t.Fatal(err)
+					}
+					values[k] = v
+					check()
+					if saved.AuthenticationRoot() != old {
+						t.Fatal("copy mutated")
+					}
+					authRoot := tr.AuthenticationRoot()
+					root, set, err := tr.Commit(false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if tr.AuthenticationRoot() != authRoot {
+						t.Fatal("root after commit changed")
+					}
+					for _, n := range set.Nodes {
+						if !n.IsDeleted() {
+							rawdb.WriteTrieNode(disk, owner, nil, n.Hash, n.Blob, rawdb.HashScheme)
+							var children []common.Hash
+							MerkleResolver{}.ForEach(n.Blob, func(h common.Hash) { children = append(children, h) })
+						}
+					}
+					tr, err = New(StorageTrieID(root, owner, root), db)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err = tr.configureAuthentication(); err != nil {
+						t.Fatal(err)
+					}
+					check()
+				}
+			})
+		}
+	}
+}
+func nilEncoderForAuthTest(v uint32, p []byte, k uint8) (incauth.Locator, error) {
+	return incauth.Locator(crypto.Keccak256Hash(p)), nil
+}
+
+// A full audit must enforce the same canonical fixed-key structure as Verify,
+// even when malformed nodes carry self-consistent authentication metadata.
+func TestGethAuthAuditStructure(t *testing.T) {
+	owner := setupAuthParallelTest(t)
+	newTrie := func() *Trie {
+		tr, err := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.HashScheme))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tr.configureAuthentication(); err != nil {
+			t.Fatal(err)
+		}
+		return tr
+	}
+	for _, tc := range []struct {
+		name string
+		root node
+	}{
+		{"short-leaf", &shortNode{Key: []byte{1, 16}, Val: valueNode{1}}},
+		{"extension-to-leaf", &shortNode{Key: []byte{1}, Val: &shortNode{Key: append(make([]byte, 63), 16), Val: valueNode{1}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := newTrie()
+			tr.root = tc.root
+			// Locally coherent hashes alone cannot establish canonical structure.
+			if err := tr.authenticateRoot(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tr.AuditAuthentication(); err == nil {
+				t.Fatal("audit accepted noncanonical fixed-key trie")
+			}
+		})
+	}
+	t.Run("cyclic-database", func(t *testing.T) {
+		tr := newTrie()
+		var cs [16]incauth.Child
+		cs[0], cs[1] = incauth.Child{Present: true, C: incauth.Commitment{1}}, incauth.Child{Present: true, C: incauth.Commitment{2}}
+		state, _, err := tr.auth.scheme.Build(cs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		locator := common.Hash{1}
+		branch := &fullNode{}
+		branch.Children[0], branch.Children[1] = hashNode(locator[:]), hashNode(common.Hash{2}.Bytes())
+		raw, err := rlp.EncodeToBytes([]interface{}{rlp.RawValue(nodeToBytes(branch)), state, []byte{1, 1, incauth.Storage}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		disk := rawdb.NewMemoryDatabase()
+		rawdb.WriteTrieNode(disk, owner, nil, locator, raw, rawdb.HashScheme)
+		tr, err = New(StorageTrieID(locator, owner, locator), newTestDatabase(disk, rawdb.HashScheme))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tr.configureAuthentication(); err != nil {
+			t.Fatal(err)
+		}
+		// Stop a buggy traversal safely; a correct audit rejects at depth 64,
+		// before reaching this test-only read barrier at depth 65.
+		tr.reader.banned = map[string]struct{}{string(make([]byte, 65)): {}}
+		_, err = tr.AuditAuthentication()
+		var missing *MissingNodeError
+		if err == nil || errors.As(err, &missing) {
+			t.Fatalf("audit did not bound cyclic traversal: %v", err)
+		}
+	})
+}
+
+func TestGethAuthStoredTampering(t *testing.T) {
+	owner := setupAuthParallelTest(t)
+	disk := rawdb.NewMemoryDatabase()
+	db := newTestDatabase(disk, rawdb.HashScheme)
+	tr, err := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.configureAuthentication(); err != nil {
+		t.Fatal(err)
+	}
+	var key [32]byte
+	for _, prefix := range []byte{0x10, 0x20} {
+		key[0] = prefix
+		if err := tr.Update(key[:], bytes.Repeat([]byte{prefix}, 64)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trusted := tr.AuthenticationRoot()
+	root, nodes, err := tr.Commit(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range nodes.Nodes {
+		rawdb.WriteTrieNode(disk, owner, nil, n.Hash, n.Blob, rawdb.HashScheme)
+	}
+	blob := rawdb.ReadTrieNode(disk, owner, nil, root, rawdb.HashScheme)
+	n, err := decodeNodeUnsafe(root[:], blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := n.(*fullNode)
+	branch.Children[1], branch.Children[2] = branch.Children[2], branch.Children[1]
+	// Preserve the valid accumulator, but redirect its physical child locators.
+	rawdb.WriteTrieNode(disk, owner, nil, root, nodeToBytes(branch), rawdb.HashScheme)
+	tr, err = New(StorageTrieID(root, owner, root), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.configureAuthentication(); err != nil {
+		t.Fatal(err)
+	}
+	if tr.AuthenticationRoot() != trusted {
+		t.Fatal("fixture did not preserve cached authentication metadata")
+	}
+	if _, err := tr.AuditAuthentication(); err == nil {
+		t.Fatal("audit accepted changed child locators")
+	}
+	proof, err := tr.AuthenticationProof(key[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := incauth.Verify(tr.auth.scheme, incauth.Commitment(trusted), key, proof); err == nil {
+		t.Fatal("proof accepted redirected child against trusted root")
+	}
+}
+
+func TestGethAuthAccounts(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	oldA, oldM := common.TrieAuthentication, common.TrieAuthMode
+	defer func() { common.TrieAuthentication, common.TrieAuthMode = oldA, oldM }()
+	common.TrieAuthentication = "ristretto255"
+	common.TrieAuthMode = "incremental"
+	common.ModifyHashMethod = "OutwardSplit"
+	common.EpochSize = 128
+	common.DepthThreshold = 3
+	disk := rawdb.NewMemoryDatabase()
+	db := newTestDatabase(disk, rawdb.HashScheme)
+	tr, err := NewStateTrie(TrieID(types.EmptyRootHash), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[[32]byte][]byte{}
+	for round := 0; round < 5; round++ {
+		SetCurrentBlockNum(uint64(127 + round))
+		for i := 0; i < 32; i++ {
+			addr := common.BytesToAddress([]byte{byte(i)})
+			k := [32]byte(crypto.Keccak256Hash(addr[:]))
+			if round == 3 && i%2 == 0 {
+				if err := tr.DeleteAccount(addr); err != nil {
+					t.Fatal(err)
+				}
+				delete(values, k)
+				continue
+			}
+			acc := &types.StateAccount{Nonce: uint64(round + i), Balance: uint256.NewInt(uint64(i + 1)), Root: types.EmptyRootHash, CodeHash: types.EmptyCodeHash[:]}
+			if err := tr.UpdateAccount(addr, acc); err != nil {
+				t.Fatal(err)
+			}
+			storage, _ := authenticationScheme(1, incauth.Storage)
+			acc.Root = common.Hash(storage.Empty())
+			value, _ := rlp.EncodeToBytes(acc)
+			values[k] = value
+		}
+		c := tr.AuthenticationRoot()
+		if _, err := tr.AuditAuthentication(); err != nil {
+			t.Fatal(err)
+		}
+		ref, err := incauth.New(rawdb.NewMemoryDatabase(), tr.trie.auth.scheme, incauth.Incremental, "oracle", nilEncoderForAuthTest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k, v := range values {
+			if err := ref.Update(k, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, _ := ref.Root()
+		if common.Hash(want) != c {
+			t.Fatal("account oracle mismatch")
+		}
+		root, set, err := tr.Commit(true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range set.Nodes {
+			if !n.IsDeleted() {
+				rawdb.WriteTrieNode(disk, common.Hash{}, nil, n.Hash, n.Blob, rawdb.HashScheme)
+			}
+		}
+		tr, err = NewStateTrie(TrieID(root), db)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestGethAuthReadAvoidanceAndInline(t *testing.T) {
+	restore := setStructuredKeyTestGlobals()
+	defer restore()
+	oldA, oldM, oldP, oldV := common.TrieAuthentication, common.TrieAuthMode, common.PathLength, common.VersionLength
+	defer func() {
+		common.TrieAuthentication, common.TrieAuthMode, common.PathLength, common.VersionLength = oldA, oldM, oldP, oldV
+	}()
+	common.TrieAuthentication = "ristretto255"
+	common.PathLength = 0
+	common.VersionLength = 0
+	owner := common.Hash{1}
+	for _, inline := range []bool{false, true} {
+		for _, mode := range []string{"incremental", "full"} {
+			t.Run(fmt.Sprintf("inline=%v/%s", inline, mode), func(t *testing.T) {
+				common.TrieAuthMode = mode
+				disk := rawdb.NewMemoryDatabase()
+				db := newTestDatabase(disk, rawdb.HashScheme)
+				tr, _ := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), db)
+				if err := tr.configureAuthentication(); err != nil {
+					t.Fatal(err)
+				}
+				var keys [16][32]byte
+				for i := range keys {
+					if inline {
+						keys[i][31] = byte(i)
+					} else {
+						keys[i][0] = byte(i << 4)
+					}
+					if err := tr.Update(keys[i][:], []byte{byte(i + 1)}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before := tr.AuthenticationRoot()
+				root, set, err := tr.Commit(false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, n := range set.Nodes {
+					if !n.IsDeleted() {
+						rawdb.WriteTrieNode(disk, owner, nil, n.Hash, n.Blob, rawdb.HashScheme)
+					}
+				}
+				tr, err = New(StorageTrieID(root, owner, root), db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = tr.configureAuthentication(); err != nil {
+					t.Fatal(err)
+				}
+				common.AuthNodeReads = 0
+				if err = tr.Update(keys[3][:], []byte{42}); err != nil {
+					t.Fatal(err)
+				}
+				after := tr.AuthenticationRoot()
+				reads := common.AuthNodeReads
+				if after == before {
+					t.Fatal("root unchanged")
+				}
+				if mode == "incremental" && reads != 0 {
+					t.Fatalf("incremental added %d child reads", reads)
+				}
+				if !inline && mode == "full" && reads != 15 {
+					t.Fatalf("full expected 15 sibling reads, got %d", reads)
+				}
+				if _, err = tr.AuditAuthentication(); err != nil {
+					t.Fatal(err)
+				}
+				p, err := tr.AuthenticationProof(keys[3][:])
+				if err != nil {
+					t.Fatal(err)
+				}
+				v, ok, err := incauth.Verify(tr.auth.scheme, incauth.Commitment(after), keys[3], p)
+				if err != nil || !ok || !bytes.Equal(v, []byte{42}) {
+					t.Fatalf("proof: %v", err)
+				}
+				t.Logf("inline=%v mode=%s additional auth reads=%d", inline, mode, reads)
+			})
+		}
+	}
+}
+func TestGethAuthDatabaseGuard(t *testing.T) {
+	oldA, oldM := common.TrieAuthentication, common.TrieAuthMode
+	defer func() { common.TrieAuthentication, common.TrieAuthMode = oldA, oldM }()
+	common.TrieAuthentication = "ristretto255"
+	common.TrieAuthMode = "incremental"
+	db := rawdb.NewMemoryDatabase()
+	if err := CheckAuthenticationDatabase(db); err != nil {
+		t.Fatal(err)
+	}
+	common.TrieAuthMode = "full"
+	if err := CheckAuthenticationDatabase(db); err != nil {
+		t.Fatal("same suite full policy must reopen", err)
+	}
+	for _, other := range []string{"p256", "gls254", ""} {
+		common.TrieAuthentication = other
+		if err := CheckAuthenticationDatabase(db); err == nil {
+			t.Fatal("suite mismatch accepted")
+		}
+	}
+	common.TrieAuthentication = "ristretto255"
+	legacy := rawdb.NewMemoryDatabase()
+	legacy.Put([]byte("node"), []byte("old"))
+	if err := CheckAuthenticationDatabase(legacy); err == nil {
+		t.Fatal("old DB accepted")
+	}
+}
+
+func TestGethAuthReferenceValidation(t *testing.T) {
+	s, err := authenticationScheme(1, incauth.Storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var children [16]incauth.Child
+	children[0], children[1] = incauth.Child{Present: true, C: incauth.Commitment{1}}, incauth.Child{Present: true, C: incauth.Commitment{2}}
+	state, _, err := s.Build(children)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := &fullNode{}
+	branch.Children[0], branch.Children[1] = hashNode(bytes.Repeat([]byte{1}, 32)), hashNode(bytes.Repeat([]byte{2}, 32))
+	// Include inline nodes and an extension, which must preserve all references.
+	inline := &shortNode{Key: hexToCompact([]byte{1, 16}), Val: valueNode{7}}
+	branch.Children[2] = inline
+	extension := &shortNode{Key: hexToCompact([]byte{1, 2}), Val: branch.Children[0]}
+	wrap := func(inner, payload, tag []byte) []byte {
+		raw, err := rlp.EncodeToBytes([]interface{}{rlp.RawValue(inner), payload, tag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	tag := []byte{1, 1, incauth.Storage}
+	for _, tc := range []struct{ inner, payload []byte }{
+		{nodeToBytes(branch), state}, {nodeToBytes(extension), make([]byte, 32)}, {nodeToBytes(inline), nil},
+	} {
+		for _, raw := range [][]byte{tc.inner, wrap(tc.inner, tc.payload, tag)} {
+			var want, got []common.Hash
+			forGatherChildren(mustDecodeNodeUnsafe(nil, raw), func(h common.Hash) { want = append(want, h) })
+			MerkleResolver{}.ForEach(raw, func(h common.Hash) { got = append(got, h) })
+			if !reflect.DeepEqual(want, got) {
+				t.Fatal("reference walk changed")
+			}
+		}
+	}
+	// Reference collection discards metadata. Ordinary reads retain it, but
+	// defer curve validation until the commitment is needed. Neither root
+	// recovery nor a delta update may accept this invalid accumulator.
+	badPoint := wrap(nodeToBytes(branch), bytes.Repeat([]byte{255}, 32), tag)
+	MerkleResolver{}.ForEach(badPoint, func(common.Hash) {})
+	decoded, err := decodeNodeUnsafe(nil, badPoint)
+	if err != nil || nodeAuthentication(decoded) == nil {
+		t.Fatal("deferred read lost metadata", err)
+	}
+	if _, err := nodeAuthentication(decoded).commitment(decoded); err == nil {
+		t.Fatal("commitment recovery accepted invalid accumulator")
+	}
+	if _, _, _, err := s.Update(nodeAuthentication(decoded).state, 7, nil); err == nil {
+		t.Fatal("delta update accepted invalid accumulator")
+	}
+	invalid := &Trie{root: decoded, auth: &trieAuth{scheme: s, suite: 1}}
+	if _, err := invalid.AuditAuthentication(); err == nil {
+		t.Fatal("audit accepted invalid accumulator")
+	}
+	if _, err := invalid.AuthenticationProof(make([]byte, 32)); err == nil {
+		t.Fatal("proof generation accepted invalid accumulator")
+	}
+	for _, raw := range [][]byte{
+		wrap(nodeToBytes(branch), state[:31], tag),
+		wrap(nodeToBytes(branch), state, []byte{2, 1, incauth.Storage}),
+		wrap(nodeToBytes(branch), state, []byte{1, 99, incauth.Storage}),
+		wrap(nodeToBytes(branch), state, []byte{1, 1, 99}),
+		wrap(nodeToBytes(extension), nil, tag),
+		wrap(nodeToBytes(inline), []byte{1}, tag),
+		wrap(nodeToBytes(inline), nil, []byte{1, 1, incauth.Account}),
+		wrap(wrap(nodeToBytes(branch), state, tag), state, tag),
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Error("reference walk accepted a malformed envelope")
+				}
+			}()
+			MerkleResolver{}.ForEach(raw, func(common.Hash) {})
+		}()
+	}
+}
+
+func setupAuthParallelTest(t testing.TB) common.Hash {
+	t.Helper()
+	restore := setStructuredKeyTestGlobals()
+	t.Cleanup(restore)
+	a, m, w := common.TrieAuthentication, common.TrieAuthMode, common.TrieAuthWorkers
+	r, c, sd := common.MeasureReadStats, common.MeasureChildStats, common.StorageDepthThreshold
+	t.Cleanup(func() {
+		common.TrieAuthentication, common.TrieAuthMode, common.TrieAuthWorkers = a, m, w
+		common.MeasureReadStats, common.MeasureChildStats, common.StorageDepthThreshold = r, c, sd
+	})
+	common.TrieAuthentication, common.TrieAuthMode, common.TrieAuthWorkers = "ristretto255", "incremental", 1
+	common.MeasureReadStats, common.MeasureChildStats = false, false
+	common.ModifyHashMethod = "OutwardStorage"
+	common.EpochSize, common.DepthThreshold, common.StorageDepthThreshold = 128, 3, 2
+	common.HashingStateTrie, common.HashingStorageTrie = false, true
+	owner := crypto.Keccak256Hash([]byte("parallel-auth-owner"))
+	common.AddrHashOfCurrentStorageTrie = owner
+	return owner
+}
+
+// StateDB applies pending maps in unspecified order. A transient collapse then
+// split rebuilds a branch; inserting first can retain its old accumulator. Both
+// orders must produce identical commitments and proofs. A transient collapse
+// can also rewrite an otherwise clean leaf, so physical node sets may differ.
+func TestGethAuthBatchOrder(t *testing.T) {
+	owner := setupAuthParallelTest(t)
+	base, _ := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.HashScheme))
+	if err := base.configureAuthentication(); err != nil {
+		t.Fatal(err)
+	}
+	var keys [3][32]byte
+	for i := range keys {
+		keys[i][0] = byte((i + 1) << 4)
+	}
+	SetCurrentBlockNum(1)
+	base.MustUpdate(keys[0][:], []byte{1})
+	base.MustUpdate(keys[1][:], []byte{1})
+	base.Hash()
+	SetCurrentBlockNum(2)
+	var want []byte
+	for _, deleteFirst := range []bool{true, false} {
+		tr := base.Copy()
+		if deleteFirst {
+			tr.MustDelete(keys[0][:])
+		}
+		tr.MustUpdate(keys[2][:], []byte{1})
+		if !deleteFirst {
+			tr.MustDelete(keys[0][:])
+		}
+		common.AuthBranchUpdates, common.AuthBranchBuilds = 0, 0
+		c := tr.AuthenticationRoot()
+		updates, builds := common.AuthBranchUpdates, common.AuthBranchBuilds
+		if updates+builds != 1 || (deleteFirst && builds != 1) || (!deleteFirst && updates != 1) {
+			t.Fatalf("unexpected work: deleteFirst=%v updates=%d builds=%d", deleteFirst, updates, builds)
+		}
+		proof, err := tr.AuthenticationProof(keys[2][:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, _, err := tr.Commit(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := append(append(append([]byte{}, c[:]...), root[:]...), proof...)
+		if want == nil {
+			want = out
+		} else if !bytes.Equal(want, out) {
+			t.Fatal("batch order changed authenticated output")
+		}
+		t.Logf("deleteFirst=%v updates=%d builds=%d output=%x", deleteFirst, updates, builds, crypto.Keccak256(out))
+	}
+}
+
+// The first read must overlap a second read. An outer authentication mutex
+// would time out here; the underlying reader returns independent/immutable blobs.
+type authConcurrentReader struct {
+	triedbdatabase.Reader
+	calls      int32
+	overlapped chan struct{}
+}
+
+func (r *authConcurrentReader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte, error) {
+	switch atomic.AddInt32(&r.calls, 1) {
+	case 1:
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-r.overlapped:
+		case <-timer.C:
+			return nil, errors.New("authentication reads unexpectedly serialized")
+		}
+	case 2:
+		close(r.overlapped)
+	}
+	return r.Reader.Node(owner, path, hash)
+}
+
+func TestGethAuthParallelAgreement(t *testing.T) {
+	owner := setupAuthParallelTest(t)
+	procs := runtime.GOMAXPROCS(16)
+	defer runtime.GOMAXPROCS(procs)
+	var keys [512][32]byte
+	for i := range keys {
+		keys[i] = [32]byte(crypto.Keccak256Hash([]byte(fmt.Sprintf("parallel-key-%d", i))))
+		keys[i][0] = 0xab // exercise an extension above the branching frontier
+	}
+	type record struct {
+		root, auth             common.Hash
+		nodes                  map[string]string
+		reads, updates, builds uint64
+	}
+	configs := [][2]string{{"ristretto255", "incremental"}, {"ristretto255", "full"}, {"p256", "incremental"}, {"keccak", "full"}}
+	if _, err := incauth.NewScheme(incauth.GLS254, incauth.Storage); err == nil {
+		configs = append(configs, [2]string{"gls254", "incremental"}, [2]string{"gls254", "full"})
+	}
+	for _, cfg := range configs {
+		common.TrieAuthentication, common.TrieAuthMode = cfg[0], cfg[1]
+		var expected []record
+		for _, workers := range []int{1, 2, 4, 8, 16} {
+			t.Run(fmt.Sprintf("%s/%s/workers=%d", cfg[0], cfg[1], workers), func(t *testing.T) {
+				common.TrieAuthWorkers = workers
+				disk := rawdb.NewMemoryDatabase()
+				defer disk.Close()
+				db := newTestDatabase(disk, rawdb.HashScheme)
+				tr, err := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = tr.configureAuthentication(); err != nil {
+					t.Fatal(err)
+				}
+				values := map[[32]byte][]byte{}
+				var records []record
+				for round := 0; round < 4; round++ {
+					SetCurrentBlockNum(uint64(126 + round))
+					prior := tr.Copy()
+					old := prior.AuthenticationRoot()
+					limit := 128
+					if round == 0 {
+						limit = len(keys)
+					}
+					for i := 0; i < limit; i++ {
+						key := keys[i]
+						if round == 2 && i < 96 {
+							if err := tr.Delete(key[:]); err != nil {
+								t.Fatal(err)
+							}
+							delete(values, key)
+							continue
+						}
+						v := []byte(fmt.Sprintf("round-%d-value-%d", round, i))
+						// The intermediate value must not add an extra old contribution.
+						if err := tr.Update(key[:], []byte("intermediate")); err != nil {
+							t.Fatal(err)
+						}
+						if err := tr.Update(key[:], v); err != nil {
+							t.Fatal(err)
+						}
+						values[key] = v
+					}
+					common.AuthNodeReads, common.AuthBranchUpdates, common.AuthBranchBuilds = 0, 0, 0
+					common.AuthParallelBatches, common.AuthParallelTasks = 0, 0
+					var concurrent *authConcurrentReader
+					if round == 1 && cfg[1] == "full" && workers > 1 {
+						concurrent = &authConcurrentReader{Reader: tr.reader.reader, overlapped: make(chan struct{})}
+						tr.reader.reader = concurrent
+					}
+					tr.Hash() // Exercise normal EVM order; AW=1 remains independent-pass oracle.
+					c := tr.AuthenticationRoot()
+					if concurrent != nil && atomic.LoadInt32(&concurrent.calls) < 2 {
+						t.Fatal("parallel reader path not exercised")
+					}
+					rec := record{auth: c, reads: common.AuthNodeReads, updates: common.AuthBranchUpdates, builds: common.AuthBranchBuilds}
+					if workers > 1 && (common.AuthParallelBatches != 1 || common.AuthParallelTasks != 16) {
+						t.Fatalf("parallel path not exercised: batches=%d tasks=%d", common.AuthParallelBatches, common.AuthParallelTasks)
+					}
+					if workers == 1 && common.AuthParallelBatches != 0 {
+						t.Fatal("serial run forked workers")
+					}
+					if tr.AuthenticationRoot() != c || common.AuthBranchBuilds != rec.builds || common.AuthBranchUpdates != rec.updates {
+						t.Fatal("cached root recomputed")
+					}
+					if prior.AuthenticationRoot() != old {
+						t.Fatal("CoW source mutated")
+					}
+					if audited, err := tr.AuditAuthentication(); err != nil || audited != c {
+						t.Fatalf("audit: %v", err)
+					}
+					for _, i := range []int{0, 127, 300, 511} {
+						proof, err := tr.AuthenticationProof(keys[i][:])
+						if err != nil {
+							t.Fatal(err)
+						}
+						got, exists, err := incauth.Verify(tr.auth.scheme, incauth.Commitment(c), keys[i], proof)
+						want, present := values[keys[i]]
+						if err != nil || exists != present || !bytes.Equal(got, want) {
+							t.Fatalf("proof: %v", err)
+						}
+					}
+					root, nodes, err := tr.Commit(false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					rec.root, rec.nodes = root, map[string]string{}
+					for path, n := range nodes.Nodes {
+						rec.nodes[path] = n.Hash.Hex() + ":" + string(n.Blob)
+						if !n.IsDeleted() {
+							var want, got []common.Hash
+							forGatherChildren(mustDecodeNodeUnsafe(nil, n.Blob), func(h common.Hash) { want = append(want, h) })
+							MerkleResolver{}.ForEach(n.Blob, func(h common.Hash) { got = append(got, h) })
+							if !reflect.DeepEqual(want, got) {
+								t.Fatal("reference-only decoding changed child locators")
+							}
+							rawdb.WriteTrieNode(disk, owner, nil, n.Hash, n.Blob, rawdb.HashScheme)
+						}
+					}
+					// Stable output fingerprint also permits old/new binary comparison.
+					var paths []string
+					for path := range rec.nodes {
+						paths = append(paths, path)
+					}
+					sort.Strings(paths)
+					var encoded []string
+					for _, path := range paths {
+						encoded = append(encoded, path, rec.nodes[path])
+					}
+					blob, _ := rlp.EncodeToBytes(encoded)
+					t.Logf("round=%d root=%x auth=%x nodes=%x", round, rec.root, rec.auth, crypto.Keccak256(blob))
+					records = append(records, rec)
+					tr, err = New(StorageTrieID(root, owner, root), db)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err = tr.configureAuthentication(); err != nil {
+						t.Fatal(err)
+					}
+					if tr.AuthenticationRoot() != c {
+						t.Fatal("reopened root changed")
+					}
+				}
+				if workers == 1 {
+					expected = records
+				} else if !reflect.DeepEqual(records, expected) {
+					t.Fatal("serial/parallel roots, persisted nodes or work counts differ")
+				}
+				for _, rec := range records {
+					old, err := New(StorageTrieID(rec.root, owner, rec.root), db)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err = old.configureAuthentication(); err != nil {
+						t.Fatal(err)
+					}
+					if c, err := old.AuditAuthentication(); err != nil || c != rec.auth {
+						t.Fatalf("historical root: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestGethAuthParallelPolicyAndFailure(t *testing.T) {
+	owner := setupAuthParallelTest(t)
+	procs := runtime.GOMAXPROCS(4)
+	defer runtime.GOMAXPROCS(procs)
+	common.TrieAuthWorkers = 4
+	tr, _ := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.HashScheme))
+	if err := tr.configureAuthentication(); err != nil {
+		t.Fatal(err)
+	}
+	tr.unhashed = AuthParallelMinUpdates - 1
+	if tr.authenticationWorkers() != 1 {
+		t.Fatal("small trie parallelized")
+	}
+	tr.unhashed = AuthParallelMinUpdates
+	if tr.authenticationWorkers() != 4 {
+		t.Fatal("large trie not parallelized")
+	}
+	common.MeasureReadStats = true
+	if tr.authenticationWorkers() != 1 {
+		t.Fatal("read diagnostics parallelized")
+	}
+	common.MeasureReadStats, common.MeasureChildStats = false, true
+	if tr.authenticationWorkers() != 1 {
+		t.Fatal("child diagnostics parallelized")
+	}
+	common.MeasureChildStats = false
+	runtime.GOMAXPROCS(1)
+	common.TrieAuthWorkers = 16
+	if tr.authenticationWorkers() != 16 {
+		t.Fatal("geth's goroutine count must not depend on GOMAXPROCS")
+	}
+	runtime.GOMAXPROCS(4)
+	format, _ := AuthenticationConfig()
+	common.TrieAuthWorkers = 1
+	if serial, _ := AuthenticationConfig(); serial != format {
+		t.Fatal("workers changed persisted format")
+	}
+	for _, invalid := range []int{0, -1, 17} {
+		common.TrieAuthWorkers = invalid
+		if _, err := AuthenticationConfig(); err == nil {
+			t.Fatal("invalid worker count accepted")
+		}
+	}
+	common.TrieAuthWorkers = 4
+	root := &fullNode{}
+	root.Children[0] = &shortNode{Key: []byte{16}, Val: valueNode{1}}
+	root.Children[1] = valueNode{2} // invalid authenticated child, in another worker
+	tr.root, tr.authRoot = root, common.Hash{42}
+	if err := tr.authenticateRoot(); err == nil {
+		t.Fatal("worker error lost")
+	}
+	if tr.root != root || tr.authRoot != (common.Hash{42}) || nodeAuthentication(root.Children[0]) != nil {
+		t.Fatal("partial result published on worker failure")
+	}
+
+	// A single dirty leaf still forks at this first branch. Cached siblings and
+	// nil slots get tasks too; the scheduler must not search for more parallel
+	// work deeper in the trie or suppress this fork as the earlier policy did.
+	tr, _ = New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.HashScheme))
+	if err := tr.configureAuthentication(); err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []byte{0x10, 0x20, 0x30} {
+		var key [32]byte
+		key[0] = prefix
+		if err := tr.Update(key[:], []byte{1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tr.Hash()
+	var key [32]byte
+	key[0] = 0x10
+	for i := 0; i < 100; i++ {
+		if err := tr.Update(key[:], []byte{byte(i + 2)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	serial := tr.Copy()
+	common.TrieAuthWorkers = 1
+	want := serial.AuthenticationRoot()
+	common.TrieAuthWorkers = 16
+	common.AuthParallelBatches, common.AuthParallelTasks = 0, 0
+	runtime.GOMAXPROCS(1)
+	if got := tr.AuthenticationRoot(); got != want {
+		t.Fatal("sparse branch root changed")
+	}
+	if common.AuthParallelBatches != 1 || common.AuthParallelTasks != 16 {
+		t.Fatal("first branch must dispatch all 16 slots even with one dirty leaf and GOMAXPROCS=1")
+	}
+}
+
+// Isolate the real geth authentication pass after a batch of updates. The trie
+// structure and delta tracking are geth's; cached input avoids mixing disk I/O
+// or mutation time into a measurement of the new subtree parallelism.
+func BenchmarkGethAuthParallel(b *testing.B) {
+	owner := setupAuthParallelTest(b)
+	for _, cfg := range [][2]string{{"ristretto255", "incremental"}, {"keccak", "full"}} {
+		b.Run(cfg[0], func(b *testing.B) {
+			common.TrieAuthentication, common.TrieAuthMode = cfg[0], cfg[1]
+			base, keys := authBenchmarkTrie(b, owner)
+			SetCurrentBlockNum(2)
+			for _, dirty := range []int{16, 128, 1024} {
+				for _, workers := range []int{1, 2, 4, 8, 16} {
+					b.Run(fmt.Sprintf("dirty=%d/workers=%d", dirty, workers), func(b *testing.B) {
+						b.StopTimer()
+						common.TrieAuthWorkers = workers
+						batches := common.AuthParallelBatches
+						b.ReportAllocs()
+						for i := 0; i < b.N; i++ {
+							tr := base.Copy()
+							for j := 0; j < dirty; j++ {
+								if err := tr.Update(keys[j][:], []byte{2}); err != nil {
+									b.Fatal(err)
+								}
+							}
+							b.StartTimer()
+							tr.AuthenticationRoot()
+							b.StopTimer()
+						}
+						b.ReportMetric(float64(common.AuthParallelBatches-batches)/float64(b.N), "parallel-batches/op")
+					})
+				}
+			}
+		})
+	}
+}
+
+func authBenchmarkTrie(b testing.TB, owner common.Hash) (*Trie, [4096][32]byte) {
+	b.Helper()
+	var keys [4096][32]byte
+	base, _ := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.HashScheme))
+	if err := base.configureAuthentication(); err != nil {
+		b.Fatal(err)
+	}
+	SetCurrentBlockNum(1)
+	for i := range keys {
+		keys[i] = [32]byte(crypto.Keccak256Hash([]byte(fmt.Sprintf("auth-bench-%d", i))))
+		if err := base.Update(keys[i][:], []byte{1}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	base.Hash()
+	return base, keys
+}
+
+// The reference walk used by TrieDB insertion/flush is outside the auth pass.
+// Cycle through real encoded nodes; report one node per operation, without I/O.
+func BenchmarkGethAuthReferences(b *testing.B) {
+	owner := setupAuthParallelTest(b)
+	for _, cfg := range [][2]string{{"ristretto255", "incremental"}, {"keccak", "full"}} {
+		b.Run(cfg[0], func(b *testing.B) {
+			common.TrieAuthentication, common.TrieAuthMode = cfg[0], cfg[1]
+			base, _ := authBenchmarkTrie(b, owner)
+			_, set, err := base.Commit(false)
+			if err != nil {
+				b.Fatal(err)
+			}
+			var paths []string
+			for path := range set.Nodes {
+				paths = append(paths, path)
+			}
+			sort.Strings(paths)
+			var blobs [][]byte
+			for _, path := range paths {
+				if n := set.Nodes[path]; !n.IsDeleted() {
+					blobs = append(blobs, n.Blob)
+				}
+			}
+			refs := 0
+			visit := func(common.Hash) { refs++ }
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				MerkleResolver{}.ForEach(blobs[i%len(blobs)], visit)
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(refs)/float64(b.N), "references/op")
+		})
+	}
+}
+
+// Cache modes must preserve geth CoW, persisted nodes, reopen and independent proofs.
+func TestGethAuthCacheAgreement(t *testing.T) {
+	owner := setupAuthParallelTest(t)
+	oldMB, oldMode := common.TrieAuthCacheMB, common.TrieAuthCacheMode
+	defer func() { common.TrieAuthCacheMB, common.TrieAuthCacheMode = oldMB, oldMode }()
+	var expected []common.Hash
+	for _, mode := range []string{"off", "accumulator", "contribution", "unified"} {
+		t.Run(mode, func(t *testing.T) {
+			common.TrieAuthCacheMB, common.TrieAuthCacheMode = 4, mode
+			if mode == "off" {
+				common.TrieAuthCacheMB, common.TrieAuthCacheMode = 0, "unified"
+			}
+			common.TrieAuthWorkers = 16
+			disk := rawdb.NewMemoryDatabase()
+			defer disk.Close()
+			db := newTestDatabase(disk, rawdb.HashScheme)
+			tr, _ := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), db)
+			if err := tr.configureAuthentication(); err != nil {
+				t.Fatal(err)
+			}
+			var results []common.Hash
+			for round := 0; round < 4; round++ {
+				SetCurrentBlockNum(uint64(400 + round))
+				prior := tr.Copy()
+				before := prior.AuthenticationRoot()
+				for i := 0; i < 128; i++ {
+					key := crypto.Keccak256Hash([]byte(fmt.Sprintf("cache-agreement-%d", i)))
+					if round == 2 && i%3 == 0 {
+						if err := tr.Delete(key[:]); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						if err := tr.Update(key[:], []byte{byte(round + 1), byte(i)}); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				c := tr.AuthenticationRoot()
+				if prior.AuthenticationRoot() != before {
+					t.Fatal("CoW changed")
+				}
+				if a, e := tr.AuditAuthentication(); e != nil || a != c {
+					t.Fatal("audit", e)
+				}
+				key := crypto.Keccak256Hash([]byte("cache-agreement-1"))
+				proof, e := tr.AuthenticationProof(key[:])
+				if e != nil {
+					t.Fatal(e)
+				}
+				independent, _ := incauth.NewScheme(incauth.Ristretto255, incauth.Storage)
+				value, present, e := incauth.Verify(independent, incauth.Commitment(c), [32]byte(key), proof)
+				if e != nil || !present || !bytes.Equal(value, []byte{byte(round + 1), 1}) {
+					t.Fatal("proof", e)
+				}
+				root, nodes, e := tr.Commit(false)
+				if e != nil {
+					t.Fatal(e)
+				}
+				var paths []string
+				for path := range nodes.Nodes {
+					paths = append(paths, path)
+				}
+				sort.Strings(paths)
+				var encoded []byte
+				for _, path := range paths {
+					n := nodes.Nodes[path]
+					encoded = append(encoded, []byte(path)...)
+					encoded = append(encoded, n.Blob...)
+					if !n.IsDeleted() {
+						rawdb.WriteLegacyTrieNode(disk, n.Hash, n.Blob)
+					}
+				}
+				results = append(results, root, c, crypto.Keccak256Hash(encoded))
+				tr, e = New(StorageTrieID(root, owner, root), db)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = tr.configureAuthentication(); e != nil {
+					t.Fatal(e)
+				}
+				if tr.AuthenticationRoot() != c {
+					t.Fatal("reopen changed")
+				}
+			}
+			if mode == "off" {
+				expected = results
+			} else if !reflect.DeepEqual(results, expected) {
+				t.Fatal("cache changes stored bytes or root")
+			}
+		})
+	}
+}
+
+// A sequence of fresh revisions, including read/decode, updates, auth, commit
+// and reopen. Values change every round; no repeated fixed-root benchmark hit.
+// Memory DB deliberately isolates CPU and cache effects, not disk throughput.
+func BenchmarkGethAuthCache(b *testing.B) {
+	owner := setupAuthParallelTest(b)
+	oldMB, oldMode := common.TrieAuthCacheMB, common.TrieAuthCacheMode
+	defer func() { common.TrieAuthCacheMB, common.TrieAuthCacheMode = oldMB, oldMode }()
+	for _, mode := range []string{"off", "accumulator", "contribution", "unified"} {
+		b.Run(mode, func(b *testing.B) {
+			common.TrieAuthCacheMB, common.TrieAuthCacheMode = 64, mode
+			if mode == "off" {
+				common.TrieAuthCacheMB, common.TrieAuthCacheMode = 0, "unified"
+			}
+			common.TrieAuthWorkers = 16
+			// Fresh independent caches for every benchmark calibration/repetition.
+			authSchemes = sync.Map{}
+			authComputationCaches = sync.Map{}
+			disk := rawdb.NewMemoryDatabase()
+			defer disk.Close()
+			db := newTestDatabase(disk, rawdb.HashScheme)
+			tr, keys := authBenchmarkTrie(b, owner)
+			commit := func() {
+				root, nodes, e := tr.Commit(false)
+				if e != nil {
+					b.Fatal(e)
+				}
+				if nodes != nil {
+					for _, n := range nodes.Nodes {
+						if !n.IsDeleted() {
+							rawdb.WriteLegacyTrieNode(disk, n.Hash, n.Blob)
+						}
+					}
+				}
+				tr, e = New(StorageTrieID(root, owner, root), db)
+				if e != nil {
+					b.Fatal(e)
+				}
+				if e = tr.configureAuthentication(); e != nil {
+					b.Fatal(e)
+				}
+			}
+			commit()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for round := 0; round < b.N; round++ {
+				SetCurrentBlockNum(uint64(round + 2))
+				for i := 0; i < 128; i++ {
+					key := keys[(round*128+i)%len(keys)]
+					var v [8]byte
+					binary.BigEndian.PutUint64(v[:], uint64(round+2))
+					if e := tr.Update(key[:], v[:]); e != nil {
+						b.Fatal(e)
+					}
+				}
+				tr.AuthenticationRoot()
+				commit()
+			}
+			b.StopTimer()
+			stats := AuthenticationCacheStats()
+			if n := stats.AccumulatorHits + stats.AccumulatorMisses; n > 0 {
+				b.ReportMetric(float64(stats.AccumulatorHits)*100/float64(n), "acc-hit-pct")
+			}
+			if n := stats.ContributionHits + stats.ContributionMisses; n > 0 {
+				b.ReportMetric(float64(stats.ContributionHits)*100/float64(n), "contrib-hit-pct")
+			}
+		})
+	}
+}
+
+// The optimized codec must preserve the original reflection encoder byte for
+// byte, including all suites and node kinds. Lazy recovery changes execution,
+// never the format, root, or proof contract.
+func TestGethAuthEnvelopeCodec(t *testing.T) {
+	setupAuthParallelTest(t)
+	for _, suite := range []byte{1, 2, 3} {
+		for _, kind := range []byte{incauth.Account, incauth.Storage} {
+			s, err := authenticationScheme(suite, kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			branch := &fullNode{}
+			var cs [16]incauth.Child
+			for i := 0; i < 16; i++ {
+				h := crypto.Keccak256Hash([]byte{byte(i)})
+				branch.Children[i] = hashNode(h[:])
+				cs[i] = incauth.Child{Present: true, C: incauth.Commitment(h)}
+			}
+			state, c, err := s.Build(cs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value := []byte("storage value")
+			var payload []byte
+			if kind == incauth.Account {
+				payload = bytes.Repeat([]byte{2}, 32)
+				value, err = rlp.EncodeToBytes(&types.StateAccount{Balance: uint256.NewInt(123), Root: common.Hash{3}, CodeHash: common.Hash{4}.Bytes()})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			leaf := &shortNode{Key: hexToCompact(append(bytes.Repeat([]byte{1}, 60), 16)), Val: valueNode(value)}
+			ext := &shortNode{Key: hexToCompact([]byte{1, 2}), Val: branch.Children[0]}
+			for _, tc := range []struct {
+				n node
+				a *nodeAuth
+			}{
+				{branch, &nodeAuth{suite: suite, kind: kind, state: state, c: c}},
+				{leaf, &nodeAuth{suite: suite, kind: kind, state: payload}},
+				{ext, &nodeAuth{suite: suite, kind: kind, state: c[:], c: c}},
+			} {
+				inner := nodeToBytes(tc.n)
+				expected, err := rlp.EncodeToBytes([]interface{}{rlp.RawValue(inner), tc.a.state, []byte{1, suite, kind}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch n := tc.n.(type) {
+				case *fullNode:
+					n.flags.auth = tc.a
+				case *shortNode:
+					n.flags.auth = tc.a
+				}
+				if !bytes.Equal(nodeToBytes(tc.n), expected) {
+					t.Fatal("stored bytes changed", suite, kind)
+				}
+				decoded, err := decodeNodeUnsafe(nil, expected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				recovered, err := nodeAuthentication(decoded).commitment(decoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := tc.a.c
+				if n, ok := decoded.(*shortNode); ok && hasTerm(n.Key) {
+					logical, e := authenticatedLeafValue(n.Val.(valueNode), tc.a)
+					if e != nil {
+						t.Fatal(e)
+					}
+					want, e = s.Leaf(n.Key[:len(n.Key)-1], logical)
+					if e != nil {
+						t.Fatal(e)
+					}
+				}
+				if recovered != want {
+					t.Fatal("commitment changed", suite, kind)
+				}
+				for i := 0; i < len(expected); i++ {
+					if _, e := decodeNodeUnsafe(nil, expected[:i]); e == nil {
+						t.Fatal("accepted truncated envelope", i)
+					}
+				}
+				if _, e := decodeNodeUnsafe(nil, append(common.CopyBytes(expected), 0)); e == nil {
+					t.Fatal("accepted trailing bytes")
+				}
+				refs, e := decodeNodeUnsafeWithAuth(nil, expected, false)
+				if e != nil || nodeAuthentication(refs) != nil {
+					t.Fatal("reference-only decode", e)
+				}
+			}
+		}
+	}
+}
+
+func TestGethAuthDeferredReads(t *testing.T) {
+	owner := setupAuthParallelTest(t)
+	oldMB, oldMode := common.TrieAuthCacheMB, common.TrieAuthCacheMode
+	defer func() { common.TrieAuthCacheMB, common.TrieAuthCacheMode = oldMB, oldMode }()
+	common.TrieAuthCacheMB, common.TrieAuthCacheMode = 4, "unified"
+	authSchemes = sync.Map{}
+	authComputationCaches = sync.Map{}
+	disk := rawdb.NewMemoryDatabase()
+	defer disk.Close()
+	db := newTestDatabase(disk, rawdb.HashScheme)
+	tr, _ := New(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), db)
+	if e := tr.configureAuthentication(); e != nil {
+		t.Fatal(e)
+	}
+	var keys []common.Hash
+	for i := 0; i < 64; i++ {
+		key := crypto.Keccak256Hash([]byte(fmt.Sprint(i)))
+		keys = append(keys, key)
+		if e := tr.Update(key[:], bytes.Repeat([]byte{byte(i)}, 64)); e != nil {
+			t.Fatal(e)
+		}
+	}
+	trusted := tr.AuthenticationRoot()
+	root, nodes, e := tr.Commit(false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, n := range nodes.Nodes {
+		rawdb.WriteLegacyTrieNode(disk, n.Hash, n.Blob)
+	}
+	reopen := func() *Trie {
+		n, e := New(StorageTrieID(root, owner, root), db)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = n.configureAuthentication(); e != nil {
+			t.Fatal(e)
+		}
+		return n
+	}
+	tr = reopen()
+	before := AuthenticationCacheStats()
+	for _, key := range keys {
+		if _, e := tr.Get(key[:]); e != nil {
+			t.Fatal(e)
+		}
+	}
+	after := AuthenticationCacheStats()
+	if before.AccumulatorHits != after.AccumulatorHits || before.AccumulatorMisses != after.AccumulatorMisses {
+		t.Fatal("read-only access recovered unused accumulator")
+	}
+	prior := tr.Copy()
+	control := reopen()
+	control.auth.full = true
+	for _, x := range []*Trie{tr, control} {
+		for _, v := range []byte{91, 92, 93} {
+			if e := x.Update(keys[0][:], bytes.Repeat([]byte{v}, 64)); e != nil {
+				t.Fatal(e)
+			}
+		}
+		if e := x.Delete(keys[1][:]); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if tr.AuthenticationRoot() != control.AuthenticationRoot() {
+		t.Fatal("first-before-image delta disagrees with full recomputation")
+	}
+	if prior.AuthenticationRoot() != trusted {
+		t.Fatal("CoW changed old root")
+	}
+	if c, e := tr.AuditAuthentication(); e != nil || c != tr.AuthenticationRoot() {
+		t.Fatal("audit", e)
+	}
+	independent, _ := incauth.NewScheme(incauth.Ristretto255, incauth.Storage)
+	for _, i := range []int{0, 1, 2} {
+		proof, e := tr.AuthenticationProof(keys[i][:])
+		if e != nil {
+			t.Fatal(e)
+		}
+		_, present, e := incauth.Verify(independent, incauth.Commitment(tr.AuthenticationRoot()), [32]byte(keys[i]), proof)
+		if e != nil || present != (i != 1) {
+			t.Fatal("proof", i, e)
+		}
 	}
 }

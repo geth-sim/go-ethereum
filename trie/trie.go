@@ -55,7 +55,9 @@ type Trie struct {
 
 	// tracer is the tool to track the trie changes.
 	// It will be reset after each commit operation.
-	tracer *tracer
+	tracer   *tracer
+	auth     *trieAuth
+	authRoot common.Hash
 }
 
 // newFlag returns the cache flag value for a newly created node.
@@ -72,6 +74,8 @@ func (t *Trie) Copy() *Trie {
 		unhashed:  t.unhashed,
 		reader:    t.reader,
 		tracer:    t.tracer.copy(),
+		auth:      t.auth,
+		authRoot:  t.authRoot,
 	}
 }
 
@@ -345,7 +349,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 			if !dirty || err != nil {
 				return false, n, err
 			}
-			return true, &shortNode{n.Key, nn, t.newFlag()}, nil
+			return true, &shortNode{n.Key, nn, t.authShortFlag(n)}, nil
 		}
 		// Otherwise branch out at the index where they differ.
 		branch := &fullNode{flags: t.newFlag()}
@@ -353,6 +357,9 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		_, branch.Children[n.Key[matchlen]], err = t.insert(nil, append(prefix, n.Key[:matchlen+1]...), n.Key[matchlen+1:], n.Val)
 		if err != nil {
 			return false, nil, err
+		}
+		if old, ok := branch.Children[n.Key[matchlen]].(*shortNode); ok {
+			old.flags = t.authShortFlag(n)
 		}
 		_, branch.Children[key[matchlen]], err = t.insert(nil, append(prefix, key[:matchlen+1]...), key[matchlen+1:], value)
 		if err != nil {
@@ -371,12 +378,16 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		return true, &shortNode{key[:matchlen], branch, t.newFlag()}, nil
 
 	case *fullNode:
-		dirty, nn, err := t.insert(n.Children[key[0]], append(prefix, key[0]), key[1:], value)
+		oldChild, flags, err := t.authBeforeChild(n, key[0], append(prefix, key[0]))
+		if err != nil {
+			return false, n, err
+		}
+		dirty, nn, err := t.insert(oldChild, append(prefix, key[0]), key[1:], value)
 		if !dirty || err != nil {
 			return false, n, err
 		}
 		n = n.copy()
-		n.flags = t.newFlag()
+		n.flags = flags
 		n.Children[key[0]] = nn
 		return true, n, nil
 
@@ -472,18 +483,22 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 			// always creates a new slice) instead of append to
 			// avoid modifying n.Key since it might be shared with
 			// other nodes.
-			return true, &shortNode{concat(n.Key, child.Key...), child.Val, t.newFlag()}, nil
+			return true, &shortNode{concat(n.Key, child.Key...), child.Val, t.authShortFlag(child)}, nil
 		default:
 			return true, &shortNode{n.Key, child, t.newFlag()}, nil
 		}
 
 	case *fullNode:
-		dirty, nn, err := t.delete(n.Children[key[0]], append(prefix, key[0]), key[1:])
+		oldChild, flags, err := t.authBeforeChild(n, key[0], append(prefix, key[0]))
+		if err != nil {
+			return false, n, err
+		}
+		dirty, nn, err := t.delete(oldChild, append(prefix, key[0]), key[1:])
 		if !dirty || err != nil {
 			return false, n, err
 		}
 		n = n.copy()
-		n.flags = t.newFlag()
+		n.flags = flags
 		n.Children[key[0]] = nn
 
 		// Because n is a full node, it must've contained at least two children
@@ -533,7 +548,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 					t.tracer.onDelete(append(prefix, byte(pos)))
 
 					k := append([]byte{byte(pos)}, cnode.Key...)
-					return true, &shortNode{k, cnode.Val, t.newFlag()}, nil
+					return true, &shortNode{k, cnode.Val, t.authShortFlag(cnode)}, nil
 				}
 			}
 			// Otherwise, n is replaced by a one-nibble short node
@@ -654,6 +669,11 @@ func (t *Trie) hashRoot() (node, node) {
 	if t.root == nil {
 		return hashNode(types.EmptyRootHash.Bytes()), nil
 	}
+	if t.auth != nil {
+		if err := t.authenticateRoot(); err != nil {
+			panic(err)
+		}
+	}
 	// If the number of changes is below 100, we let one thread handle it
 	h := newHasher(t.unhashed >= 100)
 	defer func() {
@@ -667,6 +687,15 @@ func (t *Trie) hashRoot() (node, node) {
 	var tnd common.TrieNodeData
 	CurrentTrie = t
 	hashed, cached := h.hash(t.root, true, tnd)
+	common.HashedShortNodeNum += h.nodeCounts[0]
+	common.HashedFullNodeNum += h.nodeCounts[1]
+	common.HashedLeafNodeNum += h.nodeCounts[2]
+	common.CleanChildNum += h.childCounts[0]
+	common.DirtyChildNum += h.childCounts[1]
+	common.NilChildNum += h.childCounts[2]
+	for i, count := range h.modifiedChildren {
+		common.ModifiedChildNum[i] += count
+	}
 	// Child hashers have joined and their timings are folded into h. Publish
 	// the existing aggregate once per root, outside the parallel node hot path.
 	if h.modifyHashes != 0 {
@@ -687,4 +716,6 @@ func (t *Trie) Reset() {
 	t.unhashed = 0
 	t.tracer.reset()
 	t.committed = false
+	t.auth = nil
+	t.authRoot = common.Hash{}
 }

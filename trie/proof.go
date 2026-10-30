@@ -34,6 +34,9 @@ import (
 // nodes of the longest existing prefix of the key (at least the root node), ending
 // with the node that proves the absence of the key.
 func (t *Trie) Prove(key []byte, proofDb ethdb.KeyValueWriter) error {
+	if t.auth != nil {
+		return errors.New("experimental authentication requires AuthenticationProof and incauth.Verify")
+	}
 	// Short circuit if the trie is already committed and not usable.
 	if t.committed {
 		return ErrCommitted

@@ -160,7 +160,13 @@ type MerkleResolver struct{}
 // ForEach implements childResolver, decodes the provided node and
 // traverses the children inside.
 func (resolver MerkleResolver) ForEach(node []byte, onChild func(common.Hash)) {
-	forGatherChildren(mustDecodeNodeUnsafe(nil, node), onChild)
+	// The DB needs child locators, not authenticated values. Do not recover
+	// commitments again while inserting/flushing already encoded local nodes.
+	n, err := decodeNodeUnsafeWithAuth(nil, node, false)
+	if err != nil {
+		panic(fmt.Sprintf("node %x: %v", []byte(nil), err))
+	}
+	forGatherChildren(n, onChild)
 }
 
 // forGatherChildren traverses the node hierarchy and invokes the callback

@@ -70,6 +70,9 @@ func NewStateTrie(id *ID, db database.Database) (*StateTrie, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := trie.configureAuthentication(); err != nil {
+		return nil, err
+	}
 	return &StateTrie{trie: *trie, db: db}, nil
 }
 
@@ -165,6 +168,9 @@ func (t *StateTrie) UpdateStorage(_ common.Address, key, value []byte) error {
 
 // UpdateAccount will abstract the write of an account to the secure trie.
 func (t *StateTrie) UpdateAccount(address common.Address, acc *types.StateAccount) error {
+	if t.trie.auth != nil {
+		return t.UpdateAccountWithStorageAuth(address, acc, nil)
+	}
 	hk := t.hashKey(address.Bytes())
 	data, err := rlp.EncodeToBytes(acc)
 	if err != nil {

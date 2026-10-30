@@ -169,6 +169,7 @@ func openPebbleDB(dbPath string, deleteDisk bool) (ethdb.KeyValueStore, ethdb.Da
 
 // set disk, stateDB, trieDB
 func setDatabase(deleteDisk bool) {
+	resumeOrigin = nil
 	databaseDeleteDisk = deleteDisk
 	databaseConfigured = false
 	trie.ResetRunPath()
@@ -290,6 +291,9 @@ func setDatabase(deleteDisk bool) {
 		diskdb = memorydb.New()
 	}
 
+	if err := trie.CheckAuthenticationDatabase(diskdb); err != nil {
+		panic(err)
+	}
 	fmt.Println("1")
 
 	//

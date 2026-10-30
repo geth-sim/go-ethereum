@@ -63,8 +63,9 @@ func (n *shortNode) copy() *shortNode { copy := *n; return &copy }
 
 // nodeFlag contains caching-related metadata about a node.
 type nodeFlag struct {
-	hash  hashNode // cached hash of the node (may be nil)
-	dirty bool     // whether the node has changes that must be written to the database
+	hash  hashNode  // cached hash of the node (may be nil)
+	dirty bool      // whether the node has changes that must be written to the database
+	auth  *nodeAuth // immutable authentication state; nil on the original geth path
 }
 
 func (n *fullNode) cache() (hashNode, bool)  { return n.flags.hash, n.flags.dirty }
@@ -144,6 +145,13 @@ func decodeNode(hash, buf []byte) (node, error) {
 // will be directly referenced by node without bytes deep copy, so the input MUST
 // not be changed after.
 func decodeNodeUnsafe(hash, buf []byte) (node, error) {
+	return decodeNodeUnsafeWithAuth(hash, buf, true)
+}
+
+// Only reference collection may discard authentication metadata. Ordinary
+// reads retain it; commitments are recovered and checked when authentication
+// needs them, rather than eagerly for every read-only access.
+func decodeNodeUnsafeWithAuth(hash, buf []byte, recoverAuth bool) (node, error) {
 	if len(buf) == 0 {
 		return nil, io.ErrUnexpectedEOF
 	}
@@ -152,6 +160,8 @@ func decodeNodeUnsafe(hash, buf []byte) (node, error) {
 		return nil, fmt.Errorf("decode error: %v", err)
 	}
 	switch c, _ := rlp.CountValues(elems); c {
+	case 3:
+		return decodeAuthenticatedNode(hash, buf, recoverAuth)
 	case 2:
 		n, err := decodeShort(hash, elems)
 		return n, wrapError(err, "short")

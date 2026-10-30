@@ -10,7 +10,53 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/trie/incauth"
 )
+
+func TestResumeEnvironmentValidation(t *testing.T) {
+	oldBlock, oldRoot, oldOrigin := currentBlockNum, currentStateRoot, resumeOrigin
+	oldCache, oldAuth := stateCache, common.TrieAuthentication
+	defer func() {
+		currentBlockNum, currentStateRoot, resumeOrigin = oldBlock, oldRoot, oldOrigin
+		stateCache, common.TrieAuthentication = oldCache, oldAuth
+	}()
+	common.TrieAuthentication = ""
+	db := rawdb.NewMemoryDatabase()
+	defer db.Close()
+	stateCache = state.NewDatabase(db)
+	defer stateCache.TrieDB().Close()
+	currentBlockNum, currentStateRoot, resumeOrigin = 77, common.Hash{1}, nil
+	for _, params := range [][]string{
+		{"setEnvForEVM"},
+		{"setEnvForEVM", "bad", types.EmptyRootHash.Hex()},
+		{"setEnvForEVM", "0", types.EmptyRootHash.Hex()},
+		{"setEnvForEVM", "6000001", "1234"},
+		{"setEnvForEVM", "6000001", common.Hash{}.Hex()},
+		{"setEnvForEVM", "6000001", common.Hash{2}.Hex()}, // missing DB node
+		{"setEnvForEVM", "6000001", types.EmptyRootHash.Hex(), common.Hash{3}.Hex()},
+	} {
+		if err := setEVMEnvironment(params); err == nil {
+			t.Fatalf("accepted invalid resume: %v", params)
+		}
+		if currentBlockNum != 77 || currentStateRoot != (common.Hash{1}) || resumeOrigin != nil {
+			t.Fatal("failed resume changed the active environment")
+		}
+	}
+	if err := setEVMEnvironment([]string{"setEnvForEVM", "6000001", types.EmptyRootHash.Hex()[2:]}); err != nil {
+		t.Fatal(err)
+	}
+	if currentBlockNum != 6000001 || currentStateRoot != types.EmptyRootHash {
+		t.Fatal("valid resume did not select the requested state")
+	}
+	config := captureSimulationConfig()
+	if config.Simulation.Resume == nil || config.Simulation.Resume.NextBlock != 6000001 || config.Simulation.Resume.StateRoot != types.EmptyRootHash.Hex() {
+		t.Fatal("result metadata lost the resume origin")
+	}
+}
 
 func TestKeySchemeMetadataRoundTrip(t *testing.T) {
 	restore := saveMetadataTestGlobals()
@@ -237,5 +283,63 @@ func saveMetadataTestGlobals() func() {
 		setMetadataTestKeyOptions(options)
 		simBlocksPath, common.SimBlocks = oldPath, oldBlocks
 		common.IsArchiveMode, common.IsPathScheme = oldArchive, oldPathScheme
+	}
+}
+
+func TestAuthenticationMetadata(t *testing.T) {
+	restore := saveMetadataTestGlobals()
+	defer restore()
+	oldAuth, oldMode, oldWorkers := common.TrieAuthentication, common.TrieAuthMode, common.TrieAuthWorkers
+	defer func() {
+		common.TrieAuthentication, common.TrieAuthMode, common.TrieAuthWorkers = oldAuth, oldMode, oldWorkers
+	}()
+	common.TrieAuthWorkers = 4
+	common.ModifyHashMethod = "OutwardStorage"
+	common.EpochSize = 128
+	common.DepthThreshold = 3
+	common.StorageDepthThreshold = 2
+	if err := configureKeyScheme(); err != nil {
+		t.Fatal(err)
+	}
+	configs := [][2]string{{"ristretto255", "incremental"}, {"ristretto255", "full"}, {"p256", "incremental"}, {"keccak", "full"}}
+	if _, err := incauth.NewScheme(incauth.GLS254, incauth.Account); err == nil {
+		configs = append(configs, [2]string{"gls254", "incremental"}, [2]string{"gls254", "full"})
+	}
+	for _, cfg := range configs {
+		common.TrieAuthentication, common.TrieAuthMode = cfg[0], cfg[1]
+		config := captureSimulationConfig()
+		if config.Features.Authentication != cfg[0] || config.Features.AuthenticationMode != cfg[1] || config.Features.AuthenticationFormat == "off" || config.Features.AuthenticationWorkers != 4 || config.Features.AuthenticationMinUpdates != trie.AuthParallelMinUpdates || config.Features.AuthenticationParallelPolicy != trie.AuthParallelPolicy || config.Features.AuthenticationImplementation != trie.AuthImplementation || config.Software.GoMaxProcs < 1 {
+			t.Fatal("auth settings not recorded")
+		}
+		if got, want := keySchemeFileLabel(), "OutwardStorage-E128-A3-S2B-Auth-"+cfg[0]+"-"+cfg[1]+"-GS16-AW4"; got != want {
+			t.Fatalf("label %s", got)
+		}
+		data, err := json.Marshal(simulationResultsFile{SchemaVersion: simBlocksSchemaVersion, Config: config, Blocks: map[string]*common.SimBlock{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		round, legacy, err := decodeSimulationResultsJSON(data)
+		if err != nil || legacy || !reflect.DeepEqual(round.Config, config) {
+			t.Fatal("auth metadata round trip", err)
+		}
+	}
+}
+
+func TestAuthenticationCacheMetadata(t *testing.T) {
+	oldAuth, oldMB, oldMode := common.TrieAuthentication, common.TrieAuthCacheMB, common.TrieAuthCacheMode
+	defer func() {
+		common.TrieAuthentication, common.TrieAuthCacheMB, common.TrieAuthCacheMode = oldAuth, oldMB, oldMode
+	}()
+	common.TrieAuthentication, common.TrieAuthCacheMB = "ristretto255", 4096
+	for _, mode := range []string{"accumulator", "contribution", "unified"} {
+		common.TrieAuthCacheMode = mode
+		c := captureSimulationConfig()
+		if c.Cache.AuthenticationCacheMB != 4096 || c.Cache.AuthenticationCacheMode != mode || c.Cache.AuthenticationCachePolicy == "" {
+			t.Fatal("cache configuration missing")
+		}
+		label := keySchemeFileLabel()
+		if !bytes.HasSuffix([]byte(label), []byte("-AC4096-"+mode)) {
+			t.Fatal(label)
+		}
 	}
 }

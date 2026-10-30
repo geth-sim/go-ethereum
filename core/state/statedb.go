@@ -514,7 +514,14 @@ func (s *StateDB) updateStateObject(obj *stateObject) {
 	}
 	// Encode the account and update the account trie
 	addr := obj.Address()
-	if err := s.trie.UpdateAccount(addr, &obj.data); err != nil {
+	var updateErr error
+	if common.TrieAuthentication != "" && obj.trie != nil {
+		storageRoot := obj.trie.(*trie.StateTrie).AuthenticationRoot()
+		updateErr = s.trie.(*trie.StateTrie).UpdateAccountWithStorageAuth(addr, &obj.data, &storageRoot)
+	} else {
+		updateErr = s.trie.UpdateAccount(addr, &obj.data)
+	}
+	if err := updateErr; err != nil {
 		s.setError(fmt.Errorf("updateStateObject (%x) error: %v", addr[:], err))
 	}
 	if obj.dirtyCode {
@@ -1476,4 +1483,10 @@ func (s *StateDB) SaveMeters(simBlock *common.SimBlock) {
 	simBlock.StorageUpdated = common.StorageUpdated
 	simBlock.AccountDeleted = common.AccountDeleted
 	simBlock.StorageDeleted = common.StorageDeleted
+}
+
+// AuthenticationRoot returns the experimental commitment, separately from the
+// physical root locator returned by IntermediateRoot. Hash the state first.
+func (s *StateDB) AuthenticationRoot() common.Hash {
+	return s.trie.(*trie.StateTrie).AuthenticationRoot()
 }

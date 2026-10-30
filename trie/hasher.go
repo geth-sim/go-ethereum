@@ -74,11 +74,14 @@ func AdvanceRunPath(nodes uint64) {
 // hasher is a type used for the trie Hash operation. A hasher has some
 // internal preallocated temp space
 type hasher struct {
-	sha          crypto.KeccakState
-	tmp          []byte
-	encbuf       rlp.EncoderBuffer
-	parallel     bool          // Whether to use parallel threads when hashing
-	modifyHashes time.Duration // sum of per-node elapsed durations; merged after parallel children finish
+	sha              crypto.KeccakState
+	tmp              []byte
+	encbuf           rlp.EncoderBuffer
+	parallel         bool          // Whether to use parallel threads when hashing
+	modifyHashes     time.Duration // sum of per-node elapsed durations; merged after parallel children finish
+	nodeCounts       [3]int        // short/full/leaf counts; publish only after workers join
+	childCounts      [3]int        // clean/dirty/nil children
+	modifiedChildren [17]int
 }
 
 // hasherPool holds pureHashers
@@ -96,6 +99,9 @@ func newHasher(parallel bool) *hasher {
 	h := hasherPool.Get().(*hasher)
 	h.parallel = parallel
 	h.modifyHashes = 0
+	h.nodeCounts = [3]int{}
+	h.childCounts = [3]int{}
+	h.modifiedChildren = [17]int{}
 	if common.MeasureChildStats || common.MeasureReadStats {
 		h.parallel = false // for measure MyHash stats correctly (jmlee)
 	}
@@ -1278,6 +1284,10 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 	if h.parallel {
 		var wg sync.WaitGroup
 		var childModifyHashes [16]time.Duration
+		var childStats [16]struct {
+			nodes, children [3]int
+			modified        [17]int
+		}
 		wg.Add(16)
 		for i := 0; i < 16; i++ {
 			go func(i int) {
@@ -1332,6 +1342,9 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 					collapsed.Children[i] = nilValueNode
 				}
 				childModifyHashes[i] = hasher.modifyHashes
+				childStats[i].nodes = hasher.nodeCounts
+				childStats[i].children = hasher.childCounts
+				childStats[i].modified = hasher.modifiedChildren
 				returnHasherToPool(hasher)
 				wg.Done()
 			}(i)
@@ -1339,6 +1352,17 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 		wg.Wait()
 		for _, elapsed := range childModifyHashes {
 			h.modifyHashes += elapsed
+		}
+		for _, stats := range childStats {
+			for i, count := range stats.nodes {
+				h.nodeCounts[i] += count
+			}
+			for i, count := range stats.children {
+				h.childCounts[i] += count
+			}
+			for i, count := range stats.modified {
+				h.modifiedChildren[i] += count
+			}
 		}
 	} else {
 		for i := 0; i < 16; i++ {
@@ -1350,13 +1374,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 
 				// check if child hash is cached
 				if hash, isDirty := child.cache(); hash != nil {
-					// this is clean child
-					if isDirty {
-						// this is not called until 10M blocks
-						fmt.Println("I think this is clean node, but its dirty")
-						fmt.Println("  isDirty:", isDirty)
-						os.Exit(1)
-					}
+					// Cached hash remains valid even if this node is not committed.
 					// fmt.Println("  check child", i, "-> clean")
 					collapsed.Children[i], cached.Children[i] = hash, child
 
@@ -1370,7 +1388,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 							markAdditionalReadDone(childTnd.Path)
 						}
 					}
-					common.CleanChildNum++
+					h.childCounts[0]++
 					unmodifiedChildNum++
 				} else {
 
@@ -1378,14 +1396,14 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 
 					case hashNode:
 						// fmt.Println("this is hash node -> clean")
-						common.CleanChildNum++
+						h.childCounts[0]++
 						unmodifiedChildNum++
 
 					case valueNode:
 						// fmt.Println("this is value node -> clean or dirty")
 						// valueNode cannot be a full node's child (this is not called until 10M blocks)
 						// just treat this as a nil
-						common.NilChildNum++
+						h.childCounts[2]++
 						unmodifiedChildNum++
 						fmt.Println("ERROR: full node can have valueNode as a child")
 						os.Exit(1)
@@ -1395,13 +1413,13 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 						// this can be a node which is smaller than 32B, so no hash is cached
 						// but this case would be very rare
 						if isDirty {
-							common.DirtyChildNum++
+							h.childCounts[1]++
 							modifiedChildNum++
 						} else {
 							// this is clean but cannot be seen as an independent node
 							// so just treat this as a nil
 							// this case occurred 25,077 times until 10M blocks
-							common.NilChildNum++
+							h.childCounts[2]++
 							unmodifiedChildNum++
 						}
 
@@ -1435,7 +1453,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 				collapsed.Children[i] = nilValueNode
 
 				// TODO(jmlee): need to distinguish this is nil originally or modified to nil (ex. due to trie.Delete())
-				common.NilChildNum++
+				h.childCounts[2]++
 				unmodifiedChildNum++
 			}
 		}
@@ -1448,7 +1466,7 @@ func (h *hasher) hashFullNodeChildren(n *fullNode, tnd common.TrieNodeData) (col
 		fmt.Println("  unmodifiedChildNum:", unmodifiedChildNum)
 		os.Exit(1)
 	}
-	common.ModifiedChildNum[modifiedChildNum]++
+	h.modifiedChildren[modifiedChildNum]++
 
 	// if modifiedChildNum == 0 {
 	// 	// this can happen, maybe due to read-only account (read the account but it is not updated)
@@ -1472,12 +1490,26 @@ func (h *hasher) shortnodeToHash(n *shortNode, force bool) node {
 	}
 
 	// fmt.Println("\n\nin shortnodeToHash() -> myhash:", h.hashData(enc))
-	common.HashedShortNodeNum++
+	h.nodeCounts[0]++
 	switch n.Val.(type) {
 	case valueNode:
-		common.HashedLeafNodeNum++
+		h.nodeCounts[2]++
 	}
 
+	if a := n.flags.auth; a != nil {
+		// Collapsed short nodes use compact paths; commitment recovery uses
+		// the original nibble path. Usually dirty nodes already have a.c.
+		original := n
+		if a.deferred {
+			original = n.copy()
+			original.Key = compactToHex(n.Key)
+		}
+		c, err := a.commitment(original)
+		if err != nil {
+			panic(err)
+		}
+		return hashNode(common.CopyBytes(c[:]))
+	}
 	return h.hashData(enc)
 }
 
@@ -1492,8 +1524,15 @@ func (h *hasher) fullnodeToHash(n *fullNode, force bool) node {
 	}
 
 	// fmt.Println("fullnodeToHash() -> myhash:", h.hashData(enc))
-	common.HashedFullNodeNum++
+	h.nodeCounts[1]++
 
+	if a := n.flags.auth; a != nil {
+		c, err := a.commitment(n)
+		if err != nil {
+			panic(err)
+		}
+		return hashNode(common.CopyBytes(c[:]))
+	}
 	return h.hashData(enc)
 }
 

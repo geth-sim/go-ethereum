@@ -71,6 +71,67 @@ var (
 	saveLevelDBStatsEpoch  = uint64(100000)
 )
 
+// setEVMEnvironment resumes an existing state without replaying earlier blocks.
+// A modified key scheme's DB root is not the canonical root in a block header.
+// Validate the saved root before changing the active execution environment.
+func setEVMEnvironment(params []string) (err error) {
+	if len(params) != 3 && len(params) != 4 {
+		return errors.New("expected setEnvForEVM,nextBlock,dbRoot[,authenticationRoot]")
+	}
+	next, err := strconv.ParseUint(params[1], 10, 64)
+	if err != nil || next == 0 {
+		return errors.New("resume block must be positive")
+	}
+	decodeRoot := func(text string) (common.Hash, error) {
+		data, err := hexutil.Decode("0x" + strings.TrimPrefix(text, "0x"))
+		if err != nil || len(data) != common.HashLength {
+			return common.Hash{}, errors.New("root must be exactly 32 bytes of hex")
+		}
+		root := common.BytesToHash(data)
+		if root == (common.Hash{}) {
+			return root, errors.New("zero is not a saved state root")
+		}
+		return root, nil
+	}
+	root, err := decodeRoot(params[2])
+	if err != nil {
+		return err
+	}
+	var expected common.Hash
+	if len(params) == 4 {
+		if expected, err = decodeRoot(params[3]); err != nil {
+			return err
+		}
+		if common.TrieAuthentication == "" || common.TrieAuthentication == "none" {
+			return errors.New("authentication root supplied but authentication is disabled")
+		}
+	}
+	if stateCache == nil {
+		return errors.New("setDatabase must precede setEnvForEVM")
+	}
+	// AuthenticationRoot reports malformed persisted commitments by panicking.
+	// Convert that into a failed resume; never publish a partially checked root.
+	defer func() {
+		if failure := recover(); failure != nil {
+			err = fmt.Errorf("invalid resume state: %v", failure)
+		}
+	}()
+	st, err := state.New(root, stateCache, mySnaps)
+	if err != nil {
+		return fmt.Errorf("open resume root: %w", err)
+	}
+	origin := &resumeOptions{NextBlock: next, StateRoot: root.Hex()}
+	if common.TrieAuthentication != "" && common.TrieAuthentication != "none" {
+		actual := st.AuthenticationRoot()
+		if len(params) == 4 && actual != expected {
+			return fmt.Errorf("authentication root mismatch: have %s want %s", actual, expected)
+		}
+		origin.AuthenticationRoot = actual.Hex()
+	}
+	currentBlockNum, currentStateRoot, resumeOrigin = next, root, origin
+	return nil
+}
+
 func connHandler(conn net.Conn) {
 	recvBuf := make([]byte, 4096)
 	for {
@@ -455,6 +516,15 @@ func connHandler(conn net.Conn) {
 					simBlock := new(common.SimBlock) // save simulation result
 					simBlock.Number = currentBlockNum
 					simBlock.StateRoot = currentStateRoot
+					if common.TrieAuthentication != "" {
+						genesisState, err := state.New(currentStateRoot, stateCache, nil)
+						if err != nil {
+							panic(err)
+						}
+						simBlock.AuthenticationRoot = genesisState.AuthenticationRoot()
+					}
+					common.AuthHashes, common.AuthNodeReads, common.AuthBranchUpdates, common.AuthBranchBuilds = 0, 0, 0, 0
+					common.AuthParallelBatches, common.AuthParallelTasks = 0, 0
 					common.SimBlocks[blockNumStr] = simBlock
 
 					currentBlockNum++
@@ -916,6 +986,15 @@ func connHandler(conn net.Conn) {
 				// per-node durations, which may overlap during parallel hashing.
 				simBlock.ModifyHashes = common.ModifyHashes
 				common.ModifyHashes = 0
+				simBlock.AuthHashes = time.Duration(atomic.SwapInt64((*int64)(&common.AuthHashes), 0))
+				simBlock.AuthNodeReads = atomic.SwapUint64(&common.AuthNodeReads, 0)
+				simBlock.AuthBranchUpdates = atomic.SwapUint64(&common.AuthBranchUpdates, 0)
+				simBlock.AuthBranchBuilds = atomic.SwapUint64(&common.AuthBranchBuilds, 0)
+				simBlock.AuthParallelBatches = atomic.SwapUint64(&common.AuthParallelBatches, 0)
+				simBlock.AuthParallelTasks = atomic.SwapUint64(&common.AuthParallelTasks, 0)
+				if common.TrieAuthentication != "" {
+					simBlock.AuthenticationRoot = stateDB.AuthenticationRoot()
+				}
 
 				simBlock.RandomBytesGenerates = common.RandomBytesGenerates
 				common.RandomBytesGenerates = 0
@@ -1034,12 +1113,10 @@ func connHandler(conn net.Conn) {
 				response = []byte("success")
 
 			case "setEnvForEVM":
-				// get params
-				// fmt.Println("execute setEnvForEVM()")
-
-				// set current block state
-				currentBlockNum, _ = strconv.ParseUint(params[1], 10, 64)
-				currentStateRoot = common.HexToHash(params[2])
+				if err := setEVMEnvironment(params); err != nil {
+					response = []byte("error: " + err.Error())
+					break
+				}
 				fmt.Println("next block num:", currentBlockNum, "/ state root:", currentStateRoot.Hex())
 
 				if common.LoggingReadStats {
@@ -1689,6 +1766,8 @@ func StartStateSimulator() {
 			fmt.Println("  ATileStoragePathPrefixLen:", common.ATileStoragePathPrefixLen)
 		}
 		fmt.Println("  IsArchiveMode:", common.IsArchiveMode)
+		fmt.Println("  Authentication:", common.TrieAuthentication, "/ mode:", common.TrieAuthMode)
+		fmt.Println("  Authentication workers:", common.TrieAuthWorkers, "/ minimum updates:", trie.AuthParallelMinUpdates)
 		fmt.Println("  ReadAllChildNodes:", common.ReadAllChildNodes)
 		fmt.Println("  MyHash length:", common.AdditionalByteLen)
 		fmt.Println("  DiskSizeMultiplier:", common.DiskSizeMultiplier)

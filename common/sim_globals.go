@@ -138,7 +138,19 @@ var (
 
 	// Sum per-node modifyHash elapsed durations after child hashers finish.
 	// Parallel durations can overlap; this is neither block wall time nor OS CPU time.
-	ModifyHashes time.Duration
+	// Authentication is opt-in. Set before opening any StateTrie.
+	TrieAuthentication  = ""            // "", "ristretto255", "p256", "keccak", "gls254" (optional build)
+	TrieAuthMode        = "incremental" // "incremental" or "full" (myHash control)
+	TrieAuthWorkers     = 16            // 16=geth's branch-slot policy; 1=serial; 2..15=scaling controls
+	TrieAuthCacheMB     = 0             // additional unified computation cache; 0 preserves uncached behavior
+	TrieAuthCacheMode   = "unified"     // unified, accumulator, contribution (ablation controls)
+	AuthHashes          time.Duration   // authentication pass wall time; included in Account/StorageHashes
+	AuthNodeReads       uint64          // additional trie-reader calls for authentication, not disk I/Os
+	AuthBranchUpdates   uint64
+	AuthBranchBuilds    uint64
+	AuthParallelBatches uint64 // roots whose authentication split into independent subtrees
+	AuthParallelTasks   uint64 // branch slots dispatched, including nil/cached slots (16 per batch)
+	ModifyHashes        time.Duration
 
 	ModifyHashMethod = "ATileVP" // option: JMT (VP), JMT_fixed (VP*), JMT_balanced, PrefixTree (PV), PrefixTree_fixed (PV*), PrefixTree_balanced, EpochPath (EP), TPV, DepthSplit (DS), DepthEpoch (DE), ShardVP, DualVP, RunPath, ForestVP, ATileVP, HalfPath (PH), PBSS (P), TH (VH), none (H)
 
@@ -311,6 +323,13 @@ type SimBlock struct {
 	SnapshotCommits        time.Duration
 	TrieDBCommits          time.Duration
 	ModifyHashes           time.Duration
+	AuthHashes             time.Duration
+	AuthNodeReads          uint64
+	AuthBranchUpdates      uint64
+	AuthBranchBuilds       uint64
+	AuthenticationRoot     Hash
+	AuthParallelBatches    uint64
+	AuthParallelTasks      uint64
 	AccountUpdated         int
 	StorageUpdated         int
 	AccountDeleted         int

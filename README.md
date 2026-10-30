@@ -2,8 +2,8 @@
 
 A simulator for replaying Ethereum transactions with various key schemes
 
-The [Outward report](papers/reports/outward_authentication_20260928/report_ko.md)
-records the layouts, experimental controls, results, and authentication follow-ups.
+Research papers, experiment reports and generated results are kept locally and
+are not included in this repository.
 
 Key schemes are implemented in `trie/hasher.go`, with options in
 `common/sim_globals.go`. `simulator/statesim/ethereum.go` initializes and validates
@@ -108,6 +108,40 @@ go run main.go <portNum>
 Set the scheme and measurement options in the source files listed above before
 running. To use updated settings with a prebuilt binary, rebuild it first.
 
+#### Optional trie authentication
+
+Authentication defaults to off. The geth adapter in `trie/authentication.go`
+supports interchangeable backends in `trie/incauth`: `ristretto255`, `p256`,
+`keccak` (full mode), and the optional native `gls254` backend. The independent
+trie in that package is a test reference; EVM replay uses geth's trie. The package
+also provides the proof verifier used with `AuthenticationProof`.
+
+GLS254 builds require Linux amd64 with Westmere instructions, CGO, gcc/g++, make,
+git, dpkg-deb, and Python 3.10 with pip. From the repository root:
+
+```sh
+python3 build/gls254.py
+go build -tags gls254 -o build/bin/simulator-gls254 ./simulator
+cd simulator
+GOMAXPROCS=16 ../build/bin/simulator-gls254 <portNum> \
+  -key-scheme OutwardStorage -epoch-size 128 -state-depth 3 -storage-depth 2 \
+  -auth gls254 -auth-mode incremental -auth-workers 16 -auth-cache-mb 0
+```
+
+The build helper pins upstream sources and verifies downloaded archives; its
+outputs and build manifest stay under ignored `build/cache/gls254`. A normal
+`go build -o build/bin/simulator ./simulator` needs no native GLS dependencies. Options follow
+the positional port. `-auth-cache-mb 4096 -auth-cache-mode unified` enables one
+additional 4 GiB computation cache shared by state/storage and accumulator/child
+contributions; the existing trie/DB caches remain separate. Cache modes
+`accumulator` and `contribution` support separate ablations.
+
+Use hashdb with snapshots disabled and turn off simulated myHash overhead
+(`ReadAllChildNodes=false`, `AdditionalByteLen=0`, `DiskSizeMultiplier=1`). Start
+each key scheme/backend experiment with an empty DB. The experimental
+`AuthenticationRoot` is distinct from the physical root and Ethereum's canonical
+state root; this is a research replay implementation, not a consensus change.
+
 ### How to run client
 
 #### Set options
@@ -128,6 +162,13 @@ in `build/bin/experiment`, run this command:
 python3 state_simulator.py <portNum> <startBlockNum> <endBlockNum> <lastKnownBlockNum>
 ```
 
+For a new replay use `START=0`; `END` is inclusive. To resume a closed checkpoint
+copy, use `LAST=START-1` and append `--db-path <copy> --state-root <physical-root>`
+and, for authenticated replay, `--auth-root <authentication-root>`. Both roots
+must come from that checkpoint's last block. Use a fresh checkpoint copy for
+each comparison; replay writes to the selected DB. `--save-interval <blocks>`
+controls intermediate result output.
+
 ### Results and comparison
 
 SimBlocks JSON records the effective key, database/cache and measurement settings
@@ -140,16 +181,23 @@ repeating the same block interval and scheme settings to avoid overwriting them.
 python3 simulator/merge_json_files.py --compare 'baseline=<file>' 'candidate=<file>' --start <block> --end <block>
 ```
 
-Timing covers `[start,end)` and storage uses `DiskSize` at `end`. The comparison
-metric is `BlockExecuteTime - AccountHashes - StorageHashes`; do not additionally
-subtract `ModifyHashes`, which sums per-node elapsed durations that may overlap
-during parallel hashing. For serial timing analysis, either `MeasureReadStats` or
+Timing covers `[start,end)` and storage uses `DiskSize` at `end`. Plain key-scheme
+comparisons default to `BlockExecuteTime - AccountHashes - StorageHashes`.
+Recorded authentication selects full `BlockExecuteTime` instead. Specify
+`--metric block` for authentication comparisons, especially legacy files without
+metadata; `--metric no-hash` explicitly selects the encoder-excluded metric.
+When intentionally changing authentication or its extra cache, also pass
+`--vary-auth`: each allowed difference is printed, while base trie/DB cache,
+engine and workload checks remain enforced. This permits an ablation; it does
+not establish equal memory budgets or equivalent authentication guarantees.
+Do not additionally subtract `ModifyHashes`, which sums per-node elapsed
+durations that may overlap during parallel hashing, or add `AuthHashes` to the
+total because it is already included. For serial timing analysis, either `MeasureReadStats` or
 `MeasureChildStats` disables trie-hashing parallelism and enables its associated
 statistics. Use the same measurement mode across compared schemes.
 Keep the source revision, engine, cache, compression,
 workload and machine conditions comparable. Legacy files without settings require
-checking experiment records. Detailed designs and results are in the Outward
-report linked above.
+checking experiment records.
 
 ## Go Ethereum
 

@@ -187,8 +187,19 @@ def summarize_simblocks(path, start, end):
                 read_ms=read / scale, write_ms=write / scale, disk_gib=disk_size / 2**30)
 
 
-def compare_simblocks(inputs, start, end):
+def compare_simblocks(inputs, start, end, metric=None, vary_auth=False):
     """The first input is the baseline; results are printed without new files."""
+    if metric not in (None, "block", "no-hash"):
+        raise ValueError("metric must be block or no-hash")
+    if vary_auth and metric == "no-hash":
+        raise ValueError("authentication comparisons must include hashing; use --metric block")
+    auth_fields = {
+        "cache": {"authentication_cache_mb", "authentication_cache_mode", "authentication_cache_policy",
+                  "use_unified_child_cache", "state_child_read_cache_mb", "storage_child_read_cache_mb"},
+        "features": {"authentication", "authentication_mode", "authentication_format",
+                     "authentication_workers", "authentication_min_updates", "authentication_parallel_policy",
+                     "authentication_implementation", "read_all_child_nodes", "additional_byte_len", "disk_size_multiplier"},
+    }
     results = []
     for item in inputs:
         label, separator, path = item.partition("=")
@@ -207,8 +218,12 @@ def compare_simblocks(inputs, start, end):
             base_config = baseline["metadata"].get("config", {})
             if config and base_config:
                 for field in ("cache", "features"):
-                    if config.get(field) != base_config.get(field):
-                        raise ValueError(f"{label}: {field} settings differ from baseline")
+                    current, previous = config.get(field, {}), base_config.get(field, {})
+                    for key in sorted(current.keys() | previous.keys()):
+                        if current.get(key) != previous.get(key):
+                            if not vary_auth or key not in auth_fields[field]:
+                                raise ValueError(f"{label}: {field}.{key} differs from baseline")
+                            print(f"{label}: varying {field}.{key}: {previous.get(key)!r} -> {current.get(key)!r}", file=sys.stderr)
                 checks = {
                     "simulation": ("simulation_mode", "chain_config", "is_archive_mode", "is_path_scheme", "enable_snapshot", "is_dos_attacking"),
                     "database": ("backend", "compression", "leveldb_logging_build", "leveldb_handles", "pebble_ephemeral", "trie_preimages", "path_state_history", "trie_flush_interval_ns"),
@@ -225,10 +240,18 @@ def compare_simblocks(inputs, start, end):
             print(f"{label}: legacy file; database/cache settings cannot be verified", file=sys.stderr)
         results.append(row)
     baseline = results[0]
-    print(f"Timing [{start}, {end}); storage at block {end}. Negative deltas are improvements.")
+    if metric is None:
+        authenticated = any(
+            row["metadata"].get("config", {}).get("features", {}).get("authentication") or
+            row["metadata"].get("config", {}).get("features", {}).get("read_all_child_nodes")
+            for row in results
+        )
+        metric = "block" if authenticated or vary_auth else "no-hash"
+    time_field = "block_ms" if metric == "block" else "no_hash_ms"
+    print(f"Timing [{start}, {end}); metric={time_field}; storage at block {end}. Negative deltas are improvements.")
     print("scheme\tblock_ms\tno_hash_ms\tread_ms\twrite_ms\tdisk_GiB\ttime_delta_%\tdisk_delta_%")
     for row in results:
-        time_delta = 100 * (row["no_hash_ms"] / baseline["no_hash_ms"] - 1) if baseline["no_hash_ms"] else float("nan")
+        time_delta = 100 * (row[time_field] / baseline[time_field] - 1) if baseline[time_field] else float("nan")
         disk_delta = 100 * (row["disk_gib"] / baseline["disk_gib"] - 1)
         print(f"{row['label']}\t{row['block_ms']:.6f}\t{row['no_hash_ms']:.6f}\t{row['read_ms']:.6f}\t{row['write_ms']:.6f}\t{row['disk_gib']:.6f}\t{time_delta:+.3f}\t{disk_delta:+.3f}")
     return results
@@ -239,10 +262,12 @@ if __name__ == "__main__":
     parser.add_argument("--compare", nargs="+", metavar="LABEL=FILE", help="compare runs; first input is baseline")
     parser.add_argument("--start", type=int, default=5_000_000)
     parser.add_argument("--end", type=int, default=6_000_000)
+    parser.add_argument("--metric", choices=("block", "no-hash"), help="default: block for recorded authentication, no-hash for plain/legacy runs")
+    parser.add_argument("--vary-auth", action="store_true", help="allow and report authentication/cache differences; retain base cache, engine and workload checks")
     args = parser.parse_args()
     if args.compare:
         try:
-            compare_simblocks(args.compare, args.start, args.end)
+            compare_simblocks(args.compare, args.start, args.end, args.metric, args.vary_auth)
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
         sys.exit(0)

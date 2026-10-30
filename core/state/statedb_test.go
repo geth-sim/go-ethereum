@@ -37,6 +37,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/trie/incauth"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/hashdb"
@@ -1309,4 +1310,165 @@ func TestOutwardStorageAccountStorageArchive(t *testing.T) {
 	defer func() { common.StorageDepthThreshold = old }()
 	common.StorageDepthThreshold = 1
 	testPartitionedAccountStorageArchive(t, "OutwardStorage")
+}
+
+// Keep geth's state objects, journal, storage batching, triedb and reopen path.
+// Only the authentication adapter is enabled, with the real Outward codec.
+func TestOutwardIncrementalStateLifecycle(t *testing.T) {
+	t.Run("ristretto255", func(t *testing.T) { testOutwardAuthLifecycle(t, "ristretto255", incauth.Ristretto255) })
+	if _, err := incauth.NewScheme(incauth.GLS254, incauth.Account); err == nil {
+		t.Run("gls254", func(t *testing.T) { testOutwardAuthLifecycle(t, "gls254", incauth.GLS254) })
+	}
+}
+func testOutwardAuthLifecycle(t *testing.T, backend, suiteID string) {
+	oldAuth, oldMode, oldMethod := common.TrieAuthentication, common.TrieAuthMode, common.ModifyHashMethod
+	oldV, oldL, oldO := common.VersionLength, common.LenOfPathLen, common.AddrHashPrefixLen
+	oldE, oldD, oldS := common.EpochSize, common.DepthThreshold, common.StorageDepthThreshold
+	oldB, oldHS, oldHT := trie.CurrentBlockNum, common.HashingStateTrie, common.HashingStorageTrie
+	oldCache, oldCacheMode := common.TrieAuthCacheMB, common.TrieAuthCacheMode
+	oldM, oldR, oldW := common.MeasureChildStats, common.MeasureReadStats, common.TrieAuthWorkers
+	defer func() {
+		common.TrieAuthCacheMB, common.TrieAuthCacheMode = oldCache, oldCacheMode
+		common.TrieAuthentication, common.TrieAuthMode, common.ModifyHashMethod = oldAuth, oldMode, oldMethod
+		common.VersionLength, common.LenOfPathLen, common.AddrHashPrefixLen = oldV, oldL, oldO
+		common.EpochSize, common.DepthThreshold, common.StorageDepthThreshold = oldE, oldD, oldS
+		trie.SetCurrentBlockNum(oldB)
+		common.HashingStateTrie, common.HashingStorageTrie = oldHS, oldHT
+		common.MeasureChildStats, common.MeasureReadStats, common.TrieAuthWorkers = oldM, oldR, oldW
+	}()
+	common.TrieAuthentication = backend
+	common.TrieAuthCacheMB, common.TrieAuthCacheMode = 1, "unified"
+	common.ModifyHashMethod = "OutwardStorage"
+	common.VersionLength = 8
+	common.LenOfPathLen = 2
+	common.AddrHashPrefixLen = 24
+	common.EpochSize = 128
+	common.DepthThreshold = 3
+	common.StorageDepthThreshold = 2
+	common.MeasureChildStats, common.MeasureReadStats = false, false
+	var roots [4][]common.Hash
+	cases := []struct {
+		mode    string
+		workers int
+	}{{"incremental", 1}, {"incremental", 16}, {"full", 1}, {"full", 16}}
+	for m, cfg := range cases {
+		t.Run(fmt.Sprintf("%s/workers=%d", cfg.mode, cfg.workers), func(t *testing.T) {
+			common.TrieAuthMode, common.TrieAuthWorkers = cfg.mode, cfg.workers
+			common.AuthParallelBatches = 0
+			disk := rawdb.NewMemoryDatabase()
+			tdb := triedb.NewDatabase(disk, &triedb.Config{HashDB: &hashdb.Config{CleanCacheSize: 0}})
+			defer tdb.Close()
+			cache := NewDatabaseWithNodeDB(disk, tdb)
+			root := types.EmptyRootHash
+			for block := 0; block < 6; block++ {
+				trie.SetCurrentBlockNum(uint64(126 + block))
+				st, err := New(root, cache, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for tx := 0; tx < 3; tx++ {
+					for i := 0; i < 160; i++ {
+						addr := common.BytesToAddress([]byte{byte(i)})
+						st.SetBalance(addr, uint256.NewInt(uint64(block+tx+i+1)))
+						st.SetNonce(addr, uint64(block+tx))
+						st.SetCode(addr, []byte{0x60, byte(i), 0x00})
+						for slot := 0; slot < 4; slot++ {
+							k := common.BytesToHash([]byte{byte(slot)})
+							v := common.BytesToHash([]byte{byte(block + tx + i + slot + 1)})
+							if block == 3 && slot%2 == 0 {
+								v = common.Hash{}
+							}
+							st.SetState(addr, k, v)
+						}
+					}
+					snap := st.Snapshot()
+					a := common.Address{9}
+					st.AddBalance(a, uint256.NewInt(100))
+					st.SetState(a, common.Hash{1}, common.Hash{2})
+					st.RevertToSnapshot(snap)
+					if block == 4 && tx == 2 {
+						for i := 0; i < 6; i++ {
+							st.SelfDestruct(common.BytesToAddress([]byte{byte(i)}))
+						}
+					}
+					st.IntermediateRoot(false)
+				}
+				// An account-only change must reuse its existing storage commitment.
+				st.SetNonce(common.Address{}, uint64(999+block))
+				st.IntermediateRoot(false)
+				c := st.AuthenticationRoot()
+				roots[m] = append(roots[m], c)
+				a, err := st.trie.(*trie.StateTrie).AuditAuthentication()
+				if err != nil || a != c {
+					t.Fatalf("state audit block %d: %v", block, err)
+				}
+				root, err = st.Commit(uint64(126+block), false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if st.AuthenticationRoot() != c {
+					t.Fatal("commit auth root changed")
+				}
+				if err = tdb.Commit(root, false); err != nil {
+					t.Fatal(err)
+				}
+				re, err := New(root, cache, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if re.AuthenticationRoot() != c {
+					t.Fatal("reopened auth root changed")
+				}
+				// Updating only nonce after reopen leaves obj.trie nil: preserve storage C.
+				re.SetNonce(common.Address{}, uint64(999+block))
+				re.IntermediateRoot(false)
+				if re.AuthenticationRoot() != c {
+					t.Fatal("unchanged account changed commitment")
+				}
+				for i := 0; i < 160; i++ {
+					addr := common.BytesToAddress([]byte{byte(i)})
+					obj := re.getStateObject(addr)
+					if obj == nil {
+						continue
+					}
+					tr, err := obj.getTrie()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err = tr.(*trie.StateTrie).AuditAuthentication(); err != nil {
+						t.Fatal(err)
+					}
+					key := crypto.Keccak256Hash(addr[:])
+					proof, err := re.trie.(*trie.StateTrie).AuthenticationProof(key[:])
+					if err != nil {
+						t.Fatal(err)
+					}
+					auth, _ := incauth.NewScheme(suiteID, incauth.Account)
+					value, exists, err := incauth.Verify(auth, incauth.Commitment(c), [32]byte(key), proof)
+					if err != nil || !exists {
+						t.Fatalf("account proof: %v", err)
+					}
+					var logical types.StateAccount
+					if err := rlp.DecodeBytes(value, &logical); err != nil {
+						t.Fatal(err)
+					}
+					if logical.Root != tr.(*trie.StateTrie).AuthenticationRoot() {
+						t.Fatal("account proof does not bind storage root")
+					}
+
+				}
+				if err := re.Error(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if cfg.workers > 1 && common.AuthParallelBatches == 0 {
+				t.Fatal("StateDB lifecycle did not exercise authentication workers")
+			}
+		})
+	}
+	for i := 1; i < len(roots); i++ {
+		if !reflect.DeepEqual(roots[0], roots[i]) {
+			t.Fatal("serial/parallel/full/incremental state commitments differ")
+		}
+	}
 }

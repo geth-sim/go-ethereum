@@ -16,11 +16,13 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/trie/incauth"
 	"github.com/syndtr/goleveldb/leveldb"
 )
 
 const (
-	simBlocksSchemaVersion       = 15
+	simBlocksSchemaVersion       = 19
 	keySchemeCodecVersion        = 1
 	oldestSimBlocksSchemaVersion = 2
 )
@@ -38,15 +40,24 @@ type simulationConfig struct {
 }
 
 type simulationOptions struct {
-	SimulationMode     int    `json:"simulation_mode"`
-	SimulationModeName string `json:"simulation_mode_name"`
-	ChainConfig        string `json:"chain_config"`
-	ServerPort         string `json:"server_port"`
-	IsArchiveMode      bool   `json:"is_archive_mode"`
-	IsPathScheme       bool   `json:"is_path_scheme"`
-	EnableSnapshot     bool   `json:"enable_snapshot"`
-	IsDoSAttacking     bool   `json:"is_dos_attacking"`
+	SimulationMode     int            `json:"simulation_mode"`
+	SimulationModeName string         `json:"simulation_mode_name"`
+	ChainConfig        string         `json:"chain_config"`
+	ServerPort         string         `json:"server_port"`
+	IsArchiveMode      bool           `json:"is_archive_mode"`
+	IsPathScheme       bool           `json:"is_path_scheme"`
+	EnableSnapshot     bool           `json:"enable_snapshot"`
+	IsDoSAttacking     bool           `json:"is_dos_attacking"`
+	Resume             *resumeOptions `json:"resume,omitempty"`
 }
+
+type resumeOptions struct {
+	NextBlock          uint64 `json:"next_block"`
+	StateRoot          string `json:"state_root"`
+	AuthenticationRoot string `json:"authentication_root,omitempty"`
+}
+
+var resumeOrigin *resumeOptions
 
 // keySchemeOptions records the effective encoder options and scheme parameters.
 type keySchemeOptions struct {
@@ -90,20 +101,30 @@ type databaseOptions struct {
 }
 
 type cacheOptions struct {
-	TotalCacheMB            int  `json:"total_cache_mb"`
-	LevelDBCacheMB          int  `json:"leveldb_cache_mb"`
-	DirtyCacheMB            int  `json:"dirty_cache_mb"`
-	SnapshotCacheMB         int  `json:"snapshot_cache_mb"`
-	TrieCacheMB             int  `json:"trie_cache_mb"`
-	UseUnifiedChildCache    bool `json:"use_unified_child_cache"`
-	StateChildReadCacheMB   int  `json:"state_child_read_cache_mb"`
-	StorageChildReadCacheMB int  `json:"storage_child_read_cache_mb"`
+	AuthenticationCacheMB     int    `json:"authentication_cache_mb"`
+	AuthenticationCacheMode   string `json:"authentication_cache_mode"`
+	AuthenticationCachePolicy string `json:"authentication_cache_policy"`
+	TotalCacheMB              int    `json:"total_cache_mb"`
+	LevelDBCacheMB            int    `json:"leveldb_cache_mb"`
+	DirtyCacheMB              int    `json:"dirty_cache_mb"`
+	SnapshotCacheMB           int    `json:"snapshot_cache_mb"`
+	TrieCacheMB               int    `json:"trie_cache_mb"`
+	UseUnifiedChildCache      bool   `json:"use_unified_child_cache"`
+	StateChildReadCacheMB     int    `json:"state_child_read_cache_mb"`
+	StorageChildReadCacheMB   int    `json:"storage_child_read_cache_mb"`
 }
 
 type featureOptions struct {
-	ReadAllChildNodes  bool    `json:"read_all_child_nodes"`
-	AdditionalByteLen  int     `json:"additional_byte_len"`
-	DiskSizeMultiplier float64 `json:"disk_size_multiplier"`
+	Authentication               string  `json:"authentication"`
+	AuthenticationMode           string  `json:"authentication_mode"`
+	AuthenticationFormat         string  `json:"authentication_format"`
+	AuthenticationWorkers        int     `json:"authentication_workers"`
+	AuthenticationMinUpdates     int     `json:"authentication_min_updates"`
+	AuthenticationParallelPolicy string  `json:"authentication_parallel_policy"`
+	AuthenticationImplementation string  `json:"authentication_implementation,omitempty"`
+	ReadAllChildNodes            bool    `json:"read_all_child_nodes"`
+	AdditionalByteLen            int     `json:"additional_byte_len"`
+	DiskSizeMultiplier           float64 `json:"disk_size_multiplier"`
 }
 
 type measurementOptions struct {
@@ -119,6 +140,7 @@ type measurementOptions struct {
 
 type softwareOptions struct {
 	GoVersion              string `json:"go_version"`
+	GoMaxProcs             int    `json:"gomaxprocs"`
 	GethRevision           string `json:"geth_revision"`
 	GethModified           bool   `json:"geth_modified"`
 	GoLevelDBModuleVersion string `json:"goleveldb_module_version"`
@@ -128,9 +150,10 @@ type softwareOptions struct {
 }
 
 type simulationResultsFile struct {
-	SchemaVersion int                         `json:"schema_version"`
-	Config        simulationConfig            `json:"config"`
-	Blocks        map[string]*common.SimBlock `json:"blocks"`
+	SchemaVersion            int                           `json:"schema_version"`
+	Config                   simulationConfig              `json:"config"`
+	AuthenticationCacheStats incauth.ComputationCacheStats `json:"authentication_cache_stats"`
+	Blocks                   map[string]*common.SimBlock   `json:"blocks"`
 }
 
 var (
@@ -156,6 +179,7 @@ func captureSimulationConfig() simulationConfig {
 			IsPathScheme:       common.IsPathScheme,
 			EnableSnapshot:     common.EnableSnapshot,
 			IsDoSAttacking:     common.IsDoSAttacking,
+			Resume:             resumeOrigin,
 		},
 		KeyScheme: currentKeySchemeOptions(),
 		Database: databaseOptions{
@@ -174,19 +198,29 @@ func captureSimulationConfig() simulationConfig {
 			TrieFlushIntervalNS: myFlushInterval.Load(),
 		},
 		Cache: cacheOptions{
-			TotalCacheMB:            totalCacheSize,
-			LevelDBCacheMB:          leveldbCache,
-			DirtyCacheMB:            dirtyCacheSize,
-			SnapshotCacheMB:         snapshotCacheSize,
-			TrieCacheMB:             trieCacheSize,
-			UseUnifiedChildCache:    common.UseUnifiedCache,
-			StateChildReadCacheMB:   common.StateChildReadCacheSize,
-			StorageChildReadCacheMB: common.StorageChildReadCacheSize,
+			AuthenticationCacheMB:     common.TrieAuthCacheMB,
+			AuthenticationCacheMode:   common.TrieAuthCacheMode,
+			AuthenticationCachePolicy: incauth.ComputationCachePolicy,
+			TotalCacheMB:              totalCacheSize,
+			LevelDBCacheMB:            leveldbCache,
+			DirtyCacheMB:              dirtyCacheSize,
+			SnapshotCacheMB:           snapshotCacheSize,
+			TrieCacheMB:               trieCacheSize,
+			UseUnifiedChildCache:      common.UseUnifiedCache,
+			StateChildReadCacheMB:     common.StateChildReadCacheSize,
+			StorageChildReadCacheMB:   common.StorageChildReadCacheSize,
 		},
 		Features: featureOptions{
-			ReadAllChildNodes:  common.ReadAllChildNodes,
-			AdditionalByteLen:  common.AdditionalByteLen,
-			DiskSizeMultiplier: common.DiskSizeMultiplier,
+			Authentication:               common.TrieAuthentication,
+			AuthenticationMode:           common.TrieAuthMode,
+			AuthenticationFormat:         authenticationFormat(),
+			AuthenticationWorkers:        common.TrieAuthWorkers,
+			AuthenticationMinUpdates:     trie.AuthParallelMinUpdates,
+			AuthenticationParallelPolicy: trie.AuthParallelPolicy,
+			AuthenticationImplementation: trie.AuthImplementation,
+			ReadAllChildNodes:            common.ReadAllChildNodes,
+			AdditionalByteLen:            common.AdditionalByteLen,
+			DiskSizeMultiplier:           common.DiskSizeMultiplier,
 		},
 		Measurement: measurementOptions{
 			EnabledExpensive:      enabledExpensive,
@@ -263,7 +297,7 @@ func decodeSimulationResultsJSON(data []byte) (simulationResultsFile, bool, erro
 }
 
 func captureSoftwareOptions() softwareOptions {
-	options := softwareOptions{GoVersion: runtime.Version()}
+	options := softwareOptions{GoVersion: runtime.Version(), GoMaxProcs: runtime.GOMAXPROCS(0)}
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, setting := range info.Settings {
 			switch setting.Key {
@@ -325,7 +359,20 @@ func keySchemeFileLabel() string {
 	case "ATileVP":
 		label += fmt.Sprintf("-B%d-P%d", common.ATileBlocks, common.ATileStoragePathPrefixLen)
 	}
+	if common.TrieAuthentication != "" {
+		label += fmt.Sprintf("-Auth-%s-%s-GS16-AW%d", common.TrieAuthentication, common.TrieAuthMode, common.TrieAuthWorkers)
+		if common.TrieAuthCacheMB > 0 {
+			label += fmt.Sprintf("-AC%d-%s", common.TrieAuthCacheMB, common.TrieAuthCacheMode)
+		}
+	}
 	return label
+}
+func authenticationFormat() string {
+	s, err := trie.AuthenticationConfig()
+	if err != nil {
+		panic(err)
+	}
+	return s
 }
 
 func writeSimBlocksJSON(fileName string, mapKeys []string) error {
@@ -351,6 +398,13 @@ func writeSimBlocksJSON(fileName string, mapKeys []string) error {
 	}
 
 	if _, err := writer.WriteString("{\n  \"schema_version\": " + strconv.Itoa(simBlocksSchemaVersion) + ",\n"); err != nil {
+		return err
+	}
+	cacheStats, err := json.Marshal(trie.AuthenticationCacheStats())
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(writer, "  \"authentication_cache_stats\": %s,\n", cacheStats); err != nil {
 		return err
 	}
 	if _, err := writer.WriteString("  \"config\": "); err != nil {

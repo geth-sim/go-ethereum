@@ -1,3 +1,4 @@
+import argparse
 import socket
 import os, binascii
 import sys
@@ -337,12 +338,14 @@ def commitDirtyStates():
     return result
 
 # set environment for EVM experiment
-def setEnvForEVM(blockNum, stateRoot):
+def setEnvForEVM(blockNum, stateRoot, authenticationRoot=None):
     cmd = str("setEnvForEVM")
     cmd += str(",")
     cmd += str(blockNum)
     cmd += str(",")
     cmd += str(stateRoot)
+    if authenticationRoot is not None:
+        cmd += "," + authenticationRoot
     
     client_socket.send(cmd.encode())
     data = client_socket.recv(1024)
@@ -450,23 +453,25 @@ def test():
 # -----------------------------------------------------------
 
 # replay txs in Ethereum through EVM to simulate ethereum
-def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval):
+def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval,
+                        stateRoot=None, authenticationRoot=None):
     print("run Ethereum simulation")
 
     # load previous results
     if startBlockNum != 0:
-        if lastKnownBlockNum+1 < startBlockNum:
-            print("ERROR: cannot meet this condition -> lastKnownBlockNum + 1 >= startBlockNum")
-            print("  lastKnownBlockNum:", lastKnownBlockNum)
-            print("  startBlockNum:", startBlockNum)
-            sys.exit()
+        if lastKnownBlockNum+1 != startBlockNum:
+            raise ValueError("resume root must belong to startBlockNum - 1")
         
         print("load previous results")
         # TODO(jmlee): refactoring load state logic
         # insert previous SimBlocks
         # loadSimBlocks(0, lastKnownBlockNum, startBlockNum-1)
-        lastKnownHeader = select_block_header(cursor, lastKnownBlockNum)
-        setEnvForEVM(startBlockNum, lastKnownHeader['stateroot'].hex())
+        if stateRoot is None:
+            lastKnownHeader = select_block_header(cursor, lastKnownBlockNum)
+            stateRoot = lastKnownHeader['stateroot'].hex()
+        result = setEnvForEVM(startBlockNum, stateRoot, authenticationRoot)
+        if result != "success":
+            raise RuntimeError("cannot resume EVM: " + result)
         # insert recent 256 block headers
         for blockNum in range(max(0, startBlockNum-300), startBlockNum):
             insertHeader(blockNum)
@@ -499,7 +504,9 @@ def simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_resu
         insertUncles(blockNum)
         insertTransactionArgsList(blockNum)
         insertTransactionAccessListsV2(blockNum)
-        executeTransactionArgsList()
+        result = executeTransactionArgsList()
+        if result != "success":
+            raise RuntimeError("block %d failed: %s" % (blockNum, result))
 
         # save intermediate results
         if saveResults and blockNum % temp_result_save_inteval == 0 and blockNum > lastKnownBlockNum and blockNum != endBlockNum:
@@ -667,22 +674,32 @@ if __name__ == "__main__":
     fromLevel = 0 # how many parent nodes to omit in Merkle proofs
     flushInterval = 1 # block flush interval (default: 1, at every block / but genesis block is always flushed)
 
-    if len(sys.argv) > 1:
-        if len(sys.argv) != 5:
-            print("ERROR: wrong # of argv, you need to put")
-            print("  SERVER_PORT of simulator")
-            print("  startBlockNum, endBlockNum, lastKnownBlockNum")
-            sys.exit()
-
-        SERVER_PORT = int(sys.argv[1])
-        startBlockNum = int(sys.argv[2])
-        endBlockNum = int(sys.argv[3])
-        lastKnownBlockNum = int(sys.argv[4])
+    parser = argparse.ArgumentParser(description="Replay Ethereum blocks; non-canonical schemes need their stored DB root.")
+    parser.add_argument("replay", nargs="*", type=int, metavar="PORT_START_END_LAST")
+    parser.add_argument("--db-path", help="existing DB (use a closed checkpoint copy for repeated trials)")
+    parser.add_argument("--state-root", help="DB root at start - 1; defaults to the canonical header root")
+    parser.add_argument("--auth-root", help="expected experimental authentication root at start - 1")
+    parser.add_argument("--save-interval", type=int, default=temp_result_save_inteval)
+    args = parser.parse_args()
+    if args.replay:
+        if len(args.replay) != 4:
+            parser.error("provide PORT START END LAST, as before")
+        SERVER_PORT, startBlockNum, endBlockNum, lastKnownBlockNum = args.replay
         print("set new params")
         print("  SERVER_PORT:", SERVER_PORT)
         print("  startBlockNum:", startBlockNum)
         print("  endBlockNum:", endBlockNum)
         print("  lastKnownBlockNum:", lastKnownBlockNum)
+
+    if endBlockNum < startBlockNum or startBlockNum < 0 or args.save_interval <= 0:
+        parser.error("invalid block range or save interval")
+    if startBlockNum > 0 and lastKnownBlockNum != startBlockNum - 1:
+        parser.error("LAST must equal START - 1")
+    if (args.state_root or args.auth_root) and startBlockNum == 0:
+        parser.error("resume roots require START > 0")
+    if args.auth_root and not args.state_root:
+        parser.error("--auth-root requires --state-root")
+    temp_result_save_inteval = args.save_interval
 
     # connect to geth
     client_socket.connect((SERVER_IP, SERVER_PORT))
@@ -766,8 +783,17 @@ if __name__ == "__main__":
     # 
     # TODO(jmlee): call setSimulationOptions() function before setDatabase() call
     # setSimulationOptions(enableSnapshot=True, trieNodePrefixLen=6, loggingOpcodeStats=False)
-    setDatabase(deleteDisk)
-    simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval)
+    if args.db_path:
+        if not os.path.isdir(args.db_path):
+            raise ValueError("--db-path must name an existing checkpoint copy")
+        result = setDbPath(args.db_path)
+        if result != "success":
+            raise RuntimeError("cannot select DB: " + result)
+    result = setDatabase(deleteDisk)
+    if result != "success":
+        raise RuntimeError("cannot open DB: " + result)
+    simulateEthereumEVM(startBlockNum, endBlockNum, lastKnownBlockNum, temp_result_save_inteval,
+                        args.state_root, args.auth_root)
     # simulateEthereumEVMRandom(startBlockNum, endBlockNum, lastKnownBlockNum, 10000, 800, 40000000)
     commitDirtyStates()
 
