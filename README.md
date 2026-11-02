@@ -148,7 +148,10 @@ state root; this is a research replay implementation, not a consensus change.
 
 Options in `build/bin/experiment/db_utils.py`:
 
-* DB options: set `db_host`, `db_user`, `db_pass`, `db_name`, `db_port` correctly to get transaction data from MariaDB
+Set `SIMULATOR_DB_USER`, `SIMULATOR_DB_PASSWORD`, and `SIMULATOR_DB_NAME`
+in the environment before starting the Python client. Optional settings are
+`SIMULATOR_DB_HOST` (default `localhost`) and `SIMULATOR_DB_PORT` (default `3306`).
+Keep actual connection credentials local; do not commit them.
 
 Options in `build/bin/experiment/state_simulator.py`:
 

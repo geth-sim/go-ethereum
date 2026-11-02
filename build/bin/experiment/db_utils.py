@@ -1,11 +1,12 @@
+import os
 import pymysql.cursors
 
 # ethereum tx data DB options
-db_host = 'localhost'
-db_user = 'db_user'
-db_pass = 'db_pass' # fill in the MariaDB/MySQL password.
-db_name = 'db_name' # block 0 ~ 1,000,000
-db_port = 3306 # 3306: mariadb default
+db_host = os.environ.get('SIMULATOR_DB_HOST', 'localhost')
+db_user = os.environ['SIMULATOR_DB_USER']
+db_pass = os.environ['SIMULATOR_DB_PASSWORD']
+db_name = os.environ['SIMULATOR_DB_NAME']
+db_port = int(os.environ.get('SIMULATOR_DB_PORT', '3306'))
 conn_mariadb = lambda host, port, user, password, database: pymysql.connect(host=host, port=port, user=user, password=password, database=database, cursorclass=pymysql.cursors.DictCursor)
 conn = conn_mariadb(db_host, db_port, db_user, db_pass, db_name)
 cursor = conn.cursor()
