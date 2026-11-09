@@ -323,6 +323,22 @@ func TestReplayDiskHistory(t *testing.T) {
 	if got.Number != 15 || got.DiskSize != 190 || got.HistorySize != 50 || got.StateHistorySize != 20 || got.TrienodeHistorySize != 30 {
 		t.Fatalf("wrong history subset: %+v", got)
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Timestamp.IsZero() || len(got.Filesystems) != 2 {
+		t.Fatalf("missing filesystem sample: %+v", got)
+	}
+	for label, path := range map[string]string{"home": home, "database": dir} {
+		usage := got.Filesystems[label]
+		if usage == nil || usage.Path != path || usage.Total <= uint64(got.DiskSize) || usage.Used > usage.Total || usage.Free > usage.Total || usage.UsedPercent < 0 || usage.UsedPercent > 100 {
+			t.Fatalf("invalid filesystem usage for %s: %+v", label, usage)
+		}
+	}
+	if _, err := replayFilesystemUsage(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("failed filesystem lookup must not produce zero-valued statistics")
+	}
 }
 
 func TestReplayConsole(t *testing.T) {

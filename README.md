@@ -217,7 +217,13 @@ with `trie/incauth`; its reference trie is for tests. Experimental proofs use
 
 Metric files contain matching run headers with effective options, cache budgets,
 build/dependency versions and performance/diagnostic mode. Counter differences
-must stay within one RunID. Progress redraws at most 10Hz; summaries every 1,000
+must stay within one RunID. Run headers and `simblocks.jsonl` disk samples also
+record `Filesystems.home` and `Filesystems.database`: paths, filesystem types,
+total/used/available bytes and usage percentages for the filesystems containing
+the user's home and DB. These are filesystem totals, not directory sizes;
+`free` means user-available space and `usedPercent` is `100*used/(used+free)`.
+Disk samples include UTC timestamps, including at clean stop/completion.
+Progress redraws at most 10Hz; summaries every 1,000
 blocks show total/recent speed. Remaining time uses a rolling 10,000-block window.
 
 ```sh

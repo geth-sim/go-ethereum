@@ -40,6 +40,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/triedb/pathdb"
+	"github.com/shirou/gopsutil/disk"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 )
 
@@ -440,6 +441,10 @@ func run() error {
 	// after resolving auto auth mode and the OS-dependent file-handle limit.
 	runFlags := make(map[string]string)
 	flag.VisitAll(func(f *flag.Flag) { runFlags[f.Name] = f.Value.String() })
+	filesystems, err := replayFilesystemUsage(dbPath)
+	if err != nil {
+		return err
+	}
 	runInfo := struct {
 		SchemaVersion                                                     int
 		ConsoleInterval                                                   uint64
@@ -452,6 +457,7 @@ func run() error {
 		ProcessStartedAt, ReplayStartedAt                                 time.Time
 		OSCacheDroppedAt                                                  time.Time `json:",omitempty"`
 		OSCachePreparationTime                                            time.Duration
+		Filesystems                                                       map[string]*disk.UsageStat
 		Flags                                                             map[string]string
 		PerformanceMode                                                   bool
 		DetailedMetrics                                                   []string
@@ -475,7 +481,8 @@ func run() error {
 		OS: runtime.GOOS, Arch: runtime.GOARCH, WorkingDirectory: workingDir,
 		RunID: runID, ProcessStartedAt: processStarted.UTC(), ReplayStartedAt: replayStarted.UTC(), Flags: runFlags, PerformanceMode: !*measure && !*dbMeasure, DetailedMetrics: []string{},
 		OSCacheDroppedAt: osCacheDroppedAt, OSCachePreparationTime: osCachePreparationTime,
-		Target: *until, StartingHead: head, BatchSize: *batchSize, GOMAXPROCS: runtime.GOMAXPROCS(0),
+		Filesystems: filesystems,
+		Target:      *until, StartingHead: head, BatchSize: *batchSize, GOMAXPROCS: runtime.GOMAXPROCS(0),
 		CheckpointInterval: *checkpointInterval, DiskSizeInterval: *diskInterval, DBStatsInterval: *dbStatsInterval, AuthFormat: authFormat,
 		AuthImplementation: trie.AuthImplementation, AuthParallelPolicy: trie.AuthParallelPolicy,
 		EngineOptions: options, ChainConfig: chain.Config(), StateScheme: cfg.StateScheme,
@@ -876,6 +883,29 @@ type replayDiskSample struct {
 	Type                                                         string
 	Number                                                       uint64
 	DiskSize, HistorySize, StateHistorySize, TrienodeHistorySize int64
+	Timestamp                                                    time.Time
+	Filesystems                                                  map[string]*disk.UsageStat
+}
+
+// Filesystem occupancy is distinct from the DB file sizes. Usage queries statfs
+// on Linux; it does not scan the home directory or unrelated experiment files.
+func replayFilesystemUsage(dbPath string) (map[string]*disk.UsageStat, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	usage := make(map[string]*disk.UsageStat, 2)
+	for label, path := range map[string]string{"home": home, "database": dbPath} {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return nil, err
+		}
+		usage[label], err = disk.Usage(absolute)
+		if err != nil {
+			return nil, fmt.Errorf("filesystem usage for %s: %w", label, err)
+		}
+	}
+	return usage, nil
 }
 
 func recordDiskSize(enc *json.Encoder, path string, head uint64, console *replayConsole) error {
@@ -914,6 +944,11 @@ func recordDiskSize(enc *json.Encoder, path string, head uint64, console *replay
 	if err != nil {
 		return err
 	}
+	sample.Filesystems, err = replayFilesystemUsage(path)
+	if err != nil {
+		return err
+	}
+	sample.Timestamp = time.Now().UTC()
 	sample.HistorySize = sample.StateHistorySize + sample.TrienodeHistorySize
 	if console != nil {
 		console.printf("disk block=%d total=%.3fGiB history=%.3fGiB (included)\n", head, float64(sample.DiskSize)/(1<<30), float64(sample.HistorySize)/(1<<30))
