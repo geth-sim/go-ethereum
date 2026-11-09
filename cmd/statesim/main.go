@@ -44,6 +44,9 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/opt"
 )
 
+// Set by make statesim/statesim-measure, including in Git worktrees.
+var sourceRevision = "unknown"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -51,10 +54,13 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (runErr error) {
 	processStarted := time.Now()
 	input := flag.String("blocks", "", "external concatenated block RLP file (signed transactions, complete uncles)")
-	dir := flag.String("datadir", "", "dedicated experiment directory")
+	root := flag.String("root", "/ethereum/key-simulator-geth-v"+version.Semantic, "experiment root containing dbs/ and results/")
+	dir := flag.String("datadir", "", "result/checkpoint directory; empty creates a unique directory under root/results (explicit legacy paths default to datadir/chaindata)")
+	databaseDir := flag.String("db-dir", "", "database directory override; resume defaults to the path saved in replay.json")
+	carefulRun := flag.Bool("careful-run", false, "reset only root/dbs/careful-run before starting; always preserve previous results; incompatible with resume/db-dir")
 	genesisFile := flag.String("genesis", "", "genesis JSON; empty selects Ethereum mainnet")
 	until := flag.Uint64("until", 0, "last block to execute, inclusive")
 	verify := flag.Bool("verify-state", false, "rebuild canonical state after import (untimed correctness check)")
@@ -85,6 +91,11 @@ func run() error {
 	checkpointInterval := flag.Uint64("checkpoint-interval", 10000, "durable resume checkpoint interval in blocks; 0 disables periodic checkpoints")
 	diskInterval := flag.Uint64("disk-size-interval", 10000, "disk-size and progress interval in blocks; 0 disables periodic samples")
 	dbStatsInterval := flag.Uint64("db-stats-interval", 100000, "LevelDB/Pebble statistics interval in blocks; 0 disables periodic samples")
+	var diskStatsDefault time.Duration
+	if runtime.GOOS == "linux" {
+		diskStatsDefault = time.Second
+	}
+	diskStatsInterval := flag.Duration("disk-stats-interval", diskStatsDefault, "Linux device I/O sampling interval, including performance mode; 0 disables disk_io.jsonl")
 	cache := flag.Int("cache", 4096, "base cache budget MiB for automatic allocation; explicit per-cache sizes override it")
 	trieCache := flag.Int("trie-cache", -1, "clean-node cache MiB; -1 assigns the remaining budget after DB, snapshot and write buffer")
 	dbCache := flag.Int("db-cache", -1, "database cache allowance MiB; -1 assigns 50% of -cache")
@@ -96,6 +107,9 @@ func run() error {
 	pprofPort := flag.Int("pprof-port", 0, "optional localhost-only diagnostic pprof port; 0 disables")
 	logInterval := flag.Uint64("log-interval", 1, "update progress every Nth completed block; display refreshes at 10Hz; 0 disables progress (summaries remain)")
 	flag.Parse()
+	if *diskStatsInterval < 0 || (runtime.GOOS != "linux" && *diskStatsInterval != 0) {
+		return errors.New("-disk-stats-interval requires Linux and a positive duration (0 disables)")
+	}
 	if *pprofPort < 0 || *pprofPort > 65535 {
 		return errors.New("pprof-port must be in [0,65535]")
 	}
@@ -114,8 +128,8 @@ func run() error {
 	if err := validateDatabaseOptions(*dbEngine, *compression); err != nil {
 		return err
 	}
-	if *dir == "" || *input == "" || *until == 0 || *until >= 1<<32 || *batchSize < 1 || *blockDelay < 0 {
-		return errors.New("require -datadir, -blocks, -until (1..2^32-1), valid batch/cache sizes")
+	if *root == "" || *input == "" || *until == 0 || *until >= 1<<32 || *batchSize < 1 || *blockDelay < 0 {
+		return errors.New("require -blocks, -until (1..2^32-1), nonempty -root and valid batch/cache sizes")
 	}
 	if *dbMeasure && *dbEngine != "leveldb" {
 		return errors.New("-db-measure currently requires LevelDB; detailed Pebble profiling is not implemented")
@@ -192,20 +206,16 @@ func run() error {
 		return err
 	}
 	defer f.Close()
-	dbPath := filepath.Join(*dir, "chaindata")
-	_, statErr := os.Stat(dbPath)
-	if !*resume && !os.IsNotExist(statErr) {
-		return errors.New("chaindata already exists; use -resume only for the same experiment")
-	}
-	if *resume && statErr != nil {
-		return fmt.Errorf("resume database: %w", statErr)
-	}
-	if err := os.MkdirAll(*dir, 0755); err != nil {
+	name := processStarted.UTC().Format("20060102T150405.000000000Z") + "-" + *scheme + "-" + *dbEngine + "-" + *auth
+	resultDir, dbPath, releasePaths, err := prepareReplayPaths(*root, *dir, *databaseDir, name, *resume, *carefulRun, *input, *genesisFile, *cpuProfile)
+	if err != nil {
 		return err
 	}
+	defer releasePaths()
+	*dir = resultDir
 	// Check the persistent format before opening the engine; execution-only cache
 	// settings can change on resume and are recorded per run. No source data is copied into this database upfront.
-	description := replayDescriptor{Replay: replay, NonArchive: !pbss && !*archive, CacheMiB: *cache, DBMiB: *dbCache, TrieMiB: *trieCache, DirtyMiB: dirtyCache, Handles: *handles, SnapshotMiB: *snapshotCache, Prefetch: *prefetch, Genesis: genesis.ToBlock().Hash(), Engine: *dbEngine, Compression: *compression}
+	description := replayDescriptor{Replay: replay, DatabasePath: dbPath, NonArchive: !pbss && !*archive, CacheMiB: *cache, DBMiB: *dbCache, TrieMiB: *trieCache, DirtyMiB: dirtyCache, Handles: *handles, SnapshotMiB: *snapshotCache, Prefetch: *prefetch, Genesis: genesis.ToBlock().Hash(), Engine: *dbEngine, Compression: *compression}
 	descriptor, err := json.Marshal(description)
 	if err != nil {
 		return err
@@ -330,6 +340,14 @@ func run() error {
 		return nil
 	}
 	build, _ := debug.ReadBuildInfo()
+	if sourceRevision == "unknown" {
+		if vcs, ok := version.VCS(); ok {
+			sourceRevision = vcs.Commit
+			if vcs.Dirty {
+				sourceRevision += "-dirty"
+			}
+		}
+	}
 	authFormat, err := trie.AuthenticationConfig(replay)
 	if err != nil {
 		return err
@@ -441,6 +459,12 @@ func run() error {
 	// after resolving auto auth mode and the OS-dependent file-handle limit.
 	runFlags := make(map[string]string)
 	flag.VisitAll(func(f *flag.Flag) { runFlags[f.Name] = f.Value.String() })
+	// Record only performance-relevant Go settings, not the whole environment
+	// (which may contain credentials). Empty values mean runtime defaults.
+	runtimeEnvironment := make(map[string]string)
+	for _, name := range []string{"GOGC", "GOMEMLIMIT", "GODEBUG", "GOMAXPROCS"} {
+		runtimeEnvironment[name] = os.Getenv(name)
+	}
 	filesystems, err := replayFilesystemUsage(dbPath)
 	if err != nil {
 		return err
@@ -452,6 +476,7 @@ func run() error {
 		TxTimingScope                                                     string
 		TxClassification                                                  string
 		Type, Version, Go                                                 string
+		SourceRevision                                                    string
 		OS, Arch, WorkingDirectory                                        string
 		RunID                                                             string
 		ProcessStartedAt, ReplayStartedAt                                 time.Time
@@ -459,6 +484,7 @@ func run() error {
 		OSCachePreparationTime                                            time.Duration
 		Filesystems                                                       map[string]*disk.UsageStat
 		Flags                                                             map[string]string
+		RuntimeEnvironment                                                map[string]string
 		PerformanceMode                                                   bool
 		DetailedMetrics                                                   []string
 		Target, StartingHead                                              uint64
@@ -479,10 +505,12 @@ func run() error {
 		Build                                                             *debug.BuildInfo
 	}{SchemaVersion: 4, ConsoleInterval: *logInterval, Preimages: cfg.Preimages, TxTimingScope: "apply-transaction-including-reads-finalise-excluding-sender-async-bloom", TxClassification: "receipt-gas-used-21000", Type: "run", Version: version.WithMeta, Go: runtime.Version(),
 		OS: runtime.GOOS, Arch: runtime.GOARCH, WorkingDirectory: workingDir,
-		RunID: runID, ProcessStartedAt: processStarted.UTC(), ReplayStartedAt: replayStarted.UTC(), Flags: runFlags, PerformanceMode: !*measure && !*dbMeasure, DetailedMetrics: []string{},
+		SourceRevision: sourceRevision,
+		RunID:          runID, ProcessStartedAt: processStarted.UTC(), ReplayStartedAt: replayStarted.UTC(), Flags: runFlags, PerformanceMode: !*measure && !*dbMeasure, DetailedMetrics: []string{},
 		OSCacheDroppedAt: osCacheDroppedAt, OSCachePreparationTime: osCachePreparationTime,
-		Filesystems: filesystems,
-		Target:      *until, StartingHead: head, BatchSize: *batchSize, GOMAXPROCS: runtime.GOMAXPROCS(0),
+		RuntimeEnvironment: runtimeEnvironment,
+		Filesystems:        filesystems,
+		Target:             *until, StartingHead: head, BatchSize: *batchSize, GOMAXPROCS: runtime.GOMAXPROCS(0),
 		CheckpointInterval: *checkpointInterval, DiskSizeInterval: *diskInterval, DBStatsInterval: *dbStatsInterval, AuthFormat: authFormat,
 		AuthImplementation: trie.AuthImplementation, AuthParallelPolicy: trie.AuthParallelPolicy,
 		EngineOptions: options, ChainConfig: chain.Config(), StateScheme: cfg.StateScheme,
@@ -521,10 +549,21 @@ func run() error {
 			return err
 		}
 	}
+	stopDiskStats, err := startReplayDiskStats(filepath.Join(*dir, "disk_io.jsonl"), runID, *diskStatsInterval, runInfo,
+		func() uint64 { return chain.CurrentBlock().Number.Uint64() }, stop)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := stopDiskStats(); err != nil && !errors.Is(runErr, err) {
+			runErr = errors.Join(runErr, err)
+		}
+	}()
 	console = newReplayConsole(os.Stderr, head, *until, *logInterval, replayStarted)
 	defer console.close()
 	console.printf("replay %d -> %d | scheme=%s epoch=%d A=%d S=%d | auth=%s/%s cache=%dMiB workers=%d\n", head, *until, *scheme, *epoch, *a, *s, *auth, *authMode, *authCache, *authWorkers)
 	console.printf("engine=%s/%s archive=%t state-only=%t prefetch=%t snapshot-cache=%dMiB | cache DB=%d trie=%d dirty=%dMiB | detailed trie=%t DB=%t\n", *dbEngine, *compression, cfg.ArchiveMode, replay.StateOnly, *prefetch, *snapshotCache, *dbCache, *trieCache, runInfo.EffectiveTrieDirtyMiB, *measure, *dbMeasure)
+	console.printf("database=%s\n", dbPath)
 	console.printf("results=%s | input=%s | progress every=%d blocks (10Hz); summary=1000 blocks; disk sample=%d; DB stats=%d blocks\n", *dir, *input, *logInterval, *diskInterval, *dbStatsInterval)
 	recordEngine := func(number uint64) error {
 		var snapshot any
@@ -751,6 +790,9 @@ func run() error {
 	}
 
 	stopProfile()
+	if err := stopDiskStats(); err != nil {
+		return err
+	}
 	if *verify {
 		start := time.Now()
 		console.setPhase("verify-authentication")
@@ -994,6 +1036,7 @@ func readReplayContext(stream *rlp.Stream, genesis *types.Block, head core.Repla
 
 type replayDescriptor struct {
 	Replay                  *common.ReplayConfig
+	DatabasePath            string `json:",omitempty"`
 	DBMiB, TrieMiB, Handles int
 	CacheMiB, DirtyMiB      int
 	SnapshotMiB             int
@@ -1053,7 +1096,12 @@ func dropReplayOSCaches() error {
 	}
 	// Keep the simulator unprivileged; fail rather than silently measuring with
 	// a different cache state. No workload or database is open at this point.
-	out, err := exec.Command("sudo", "-n", "/bin/sh", "-c", "sync && echo 3 > /proc/sys/vm/drop_caches").CombinedOutput()
+	if out, err := exec.Command("sync").CombinedOutput(); err != nil {
+		return fmt.Errorf("sync before OS cache reset failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	// A sudoers rule can grant only this exact command and argument, without
+	// granting a root shell or allowing changes to other kernel parameters.
+	out, err := exec.Command("sudo", "-n", "/usr/sbin/sysctl", "-w", "vm.drop_caches=3").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("OS cache reset failed (requires noninteractive sudo): %w: %s", err, strings.TrimSpace(string(out)))
 	}

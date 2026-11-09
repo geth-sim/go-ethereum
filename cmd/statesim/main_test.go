@@ -23,25 +23,33 @@ func TestReplayOSCachePreparation(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux cache preparation")
 	}
-	// Never reset the test host's caches. Substitute only the privileged helper.
+	// Never sync or reset the test host's caches. Substitute both commands.
 	dir := t.TempDir()
 	t.Setenv("PATH", dir)
 	log := filepath.Join(dir, "arguments")
 	t.Setenv("STATESIM_CACHE_RESET_TEST_LOG", log)
-	helper := filepath.Join(dir, "sudo")
-	for _, exitCode := range []string{"7", "0"} {
-		script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$STATESIM_CACHE_RESET_TEST_LOG\"\nexit " + exitCode + "\n"
-		if err := os.WriteFile(helper, []byte(script), 0700); err != nil {
+	for _, test := range []struct{ syncExit, sudoExit string }{{"7", "0"}, {"0", "7"}, {"0", "0"}} {
+		if err := os.WriteFile(log, nil, 0600); err != nil {
 			t.Fatal(err)
 		}
+		for command, exitCode := range map[string]string{"sync": test.syncExit, "sudo": test.sudoExit} {
+			script := "#!/bin/sh\nprintf '%s\\n' " + command + " \"$@\" >> \"$STATESIM_CACHE_RESET_TEST_LOG\"\nexit " + exitCode + "\n"
+			if err := os.WriteFile(filepath.Join(dir, command), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
 		err := dropReplayOSCaches()
-		if (err == nil) != (exitCode == "0") {
+		if (err == nil) != (test.syncExit == "0" && test.sudoExit == "0") {
 			t.Fatalf("cache preparation must propagate helper failure: %v", err)
 		}
-	}
-	args, err := os.ReadFile(log)
-	if err != nil || string(args) != "-n\n/bin/sh\n-c\nsync && echo 3 > /proc/sys/vm/drop_caches\n" {
-		t.Fatalf("cache reset must be noninteractive and sync first: %q, %v", args, err)
+		want := "sync\n"
+		if test.syncExit == "0" {
+			want += "sudo\n-n\n/usr/sbin/sysctl\n-w\nvm.drop_caches=3\n"
+		}
+		args, err := os.ReadFile(log)
+		if err != nil || string(args) != want {
+			t.Fatalf("cache reset must be noninteractive and follow successful sync: %q, %v", args, err)
+		}
 	}
 }
 

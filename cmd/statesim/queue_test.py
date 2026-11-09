@@ -141,6 +141,42 @@ if mode == 'error': sys.exit(2)
         with self.assertRaisesRegex(ValueError, "clone_from"):
             queue.preflight(job)
 
+    def test_careful_queue_preserves_distinct_results(self):
+        scratch = self.root / "dbs/careful-run"
+        scratch.mkdir(parents=True)
+        for job in self.config["jobs"]:
+            job["argv"] += ["-root", str(self.root), "-careful-run"]
+            self.assertEqual(queue.database_path(job), scratch)
+        self.invoke(check=True)
+        self.assertTrue(scratch.exists())  # Preflight never clears DBs.
+        self.invoke()
+        for name in ("first", "second"):
+            queue.completed(self.root / name, 2)
+
+    def test_separate_database_clone_updates_paths_and_rejects_replaced_source(self):
+        origin = self.root / "results/source"
+        original_db = self.root / "dbs/source"
+        origin.mkdir(parents=True)
+        original_db.mkdir(parents=True)
+        (original_db / "LOCK").touch()
+        (original_db / "statesim-results").write_text(str(origin))
+        (origin / "replay.json").write_text(json.dumps({"Replay": {"StateOnly": True}, "DatabasePath": str(original_db)}))
+        (origin / "checkpoint.json").write_text('{"StateScheme":"hash","Head":{"Number":1}}')
+        (origin / "simblocks.jsonl").write_text('{"Type":"complete","Head":1}\n')
+        job = self.job("clone")
+        copied_db = self.root / "dbs/clone"
+        job["argv"] += ["-db-dir", str(copied_db), "-resume"]
+        job["clone_from"] = {"datadir": str(origin), "checkpoint_sha256": queue.digest(origin / "checkpoint.json")}
+        dest, _ = queue.preflight(job)
+        with mock.patch.object(queue.subprocess, "run", side_effect=lambda argv, **kw: shutil.copytree(argv[-2], argv[-1])):
+            queue.clone_checkpoint(job, dest)
+        self.assertEqual(queue.source_database(dest), copied_db)
+        self.assertEqual((copied_db / "statesim-results").read_text(), str(dest))
+        self.assertEqual(queue.source_database(origin), original_db)
+        (original_db / "statesim-results").write_text(str(self.root / "new-results"))
+        with self.assertRaisesRegex(ValueError, "reused"):
+            queue.source_database(origin)
+
     def test_waits_for_exact_predecessor_then_launches(self):
         predecessor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.25)"])
         captured = queue.identity(predecessor.pid)

@@ -54,16 +54,47 @@ def digest(path):
     return h.hexdigest()
 
 
-def flag(argv, name):
+def flag(argv, name, default=None):
     values = []
     for index, arg in enumerate(argv[1:], 1):
         if arg in ("-" + name, "--" + name):
             values.append(argv[index + 1])
         elif arg.startswith(("-" + name + "=", "--" + name + "=")):
             values.append(arg.split("=", 1)[1])
+    if not values and default is not None:
+        return default
     if len(values) != 1:
         raise ValueError(f"explicit, unique -{name} is required")
     return values[0]
+
+
+def careful_run(argv):
+    values = [arg.partition("=")[2] or "true" for arg in argv
+              if arg.split("=", 1)[0] in ("-careful-run", "--careful-run")]
+    if len(values) > 1 or any(value not in ("true", "false") for value in values):
+        raise ValueError("use one -careful-run=true or -careful-run=false")
+    return values == ["true"]
+
+
+def database_path(job):
+    argv = job["argv"]
+    if careful_run(argv):
+        if flag(argv, "db-dir", "") or job.get("clone_from"):
+            raise ValueError("careful-run cannot use db-dir or clone_from")
+        # Queue plans use explicit paths even where the CLI has defaults.
+        return Path(flag(argv, "root")) / "dbs" / "careful-run"
+    return Path(flag(argv, "db-dir", "")) if flag(argv, "db-dir", "") else Path(flag(argv, "datadir")) / "chaindata"
+
+
+def source_database(origin):
+    description = json.loads((origin / "replay.json").read_text())
+    db = Path(description.get("DatabasePath") or origin / "chaindata")
+    owner = db / "statesim-results"
+    if owner.exists() and owner.read_text() != str(origin.resolve()):
+        raise ValueError("source database has been reused by another experiment")
+    if db != origin / "chaindata" and not owner.exists():
+        raise ValueError("source database is missing its result-directory marker")
+    return db
 
 
 def completed(datadir, target):
@@ -87,17 +118,20 @@ def preflight(job):
     argv = job["argv"]
     binary = Path(argv[0])
     datadir = Path(flag(argv, "datadir"))
+    database = database_path(job)
     blocks = Path(flag(argv, "blocks"))
     target = int(flag(argv, "until"))
-    if not all(p.is_absolute() for p in (binary, datadir, blocks, Path(job["cwd"]))):
-        raise ValueError("binary, datadir, blocks and cwd must be absolute paths")
+    if not all(p.is_absolute() for p in (binary, datadir, database, blocks, Path(job["cwd"]))):
+        raise ValueError("binary, datadir, database, blocks and cwd must be absolute paths")
+    if datadir.resolve().is_relative_to(database.resolve()):
+        raise ValueError("results must be outside the database directory")
     resume = [arg for arg in argv if arg.split("=", 1)[0] in ("-resume", "--resume")]
     source = job.get("clone_from")
     if bool(resume) != bool(source) or (resume and resume not in (["-resume"], ["-resume=true"])):
         raise ValueError("-resume requires clone_from; existing output DBs are never reused")
     if source:
         origin = Path(source["datadir"])
-        if not origin.is_absolute() or not (origin / "chaindata").is_dir():
+        if not origin.is_absolute() or not source_database(origin).is_dir():
             raise ValueError("clone source must be an absolute checkpoint directory")
         if digest(origin / "checkpoint.json") != source["checkpoint_sha256"]:
             raise ValueError("source checkpoint changed")
@@ -114,11 +148,18 @@ def preflight(job):
         raise ValueError(f"executable missing or changed: {binary}")
     if datadir.exists():
         raise ValueError(f"refusing to reuse an existing output directory: {datadir}")
+    if database.exists() and not careful_run(argv):
+        raise ValueError(f"refusing to reuse an existing database: {database}")
     # The existing parent also anchors the expected output filesystem.
     if not datadir.parent.is_dir():
         raise ValueError(f"output parent must already exist: {datadir.parent}")
     if shutil.disk_usage(datadir.parent).free < job.get("min_free_gib", 0) * 2**30:
         raise ValueError(f"insufficient free disk space: {datadir.parent}")
+    db_parent = database.parent
+    while not db_parent.exists():
+        db_parent = db_parent.parent
+    if shutil.disk_usage(db_parent).free < job.get("min_free_gib", 0) * 2**30:
+        raise ValueError(f"insufficient free database space: {db_parent}")
     return datadir, target
 
 
@@ -126,15 +167,23 @@ def clone_checkpoint(job, datadir):
     """Reflink a closed DB, preserving the source and sharing no writable files."""
     source = job["clone_from"]
     origin = Path(source["datadir"])
-    with (origin / "chaindata/LOCK").open("rb") as lock:
+    original_db, database = source_database(origin), database_path(job)
+    with Path(str(original_db) + ".statesim-lock").open("a+") as guard, (original_db / "LOCK").open("r+b") as lock:
+        fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         # Recheck after locking in case the source ran since preflight.
         preflight(job)
         datadir.mkdir()
+        database.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["cp", "-a", "--reflink=always", "--no-target-directory",
-                        str(origin / "chaindata"), str(datadir / "chaindata")], check=True)
+                        str(original_db), str(database)], check=True)
         for name in ("replay.json", "checkpoint.json"):
             shutil.copy2(origin / name, datadir / name)
+        description = json.loads((datadir / "replay.json").read_text())
+        description["DatabasePath"] = str(database.resolve())
+        publish(datadir / "replay.json", description)
+        (database / "statesim-results").write_text(str(datadir.resolve()))
         # Earlier result rows remain in the source; this run records only its
         # resumed interval with a new RunID and freshly sampled engine counters.
         (datadir / "simblocks.jsonl").touch()
@@ -174,9 +223,15 @@ def run(plan_path, check=False, poll=30):
         child = None
         try:
             outputs = []
+            databases = {}
             for job in plan["jobs"]:
                 datadir, _ = preflight(job)
                 outputs.append(datadir.resolve())
+                db = database_path(job).resolve()
+                reusable = careful_run(job["argv"])
+                if db in databases and not (databases[db] and reusable):
+                    raise ValueError("only careful-run jobs may share a database directory")
+                databases[db] = reusable
             if len(outputs) != len(set(outputs)):
                 raise ValueError("jobs must have distinct output directories")
             after = plan.get("after")

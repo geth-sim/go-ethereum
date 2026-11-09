@@ -22,12 +22,15 @@ evm:
 
 # Optional native authentication backend: STATESIM_TAGS=gls254.
 STATESIM_TAGS ?=
+# Go versions that do not recognize worktree .git files omit automatic VCS data.
+STATESIM_REVISION = $(shell git rev-parse --verify HEAD 2>/dev/null || echo unknown)$(shell test -z "$$(git status --porcelain 2>/dev/null)" || echo -dirty)
+STATESIM_LDFLAGS = -X main.sourceRevision=$(STATESIM_REVISION)
 DB_ENGINE ?= leveldb
 DB_SOURCE ?=
 
 #? statesim: Build replay with upstream databases pinned in go.mod.
 statesim:
-	GOWORK=off go build -tags '$(STATESIM_TAGS)' -o $(GOBIN)/statesim ./cmd/statesim
+	GOWORK=off go build -ldflags '$(STATESIM_LDFLAGS)' -tags '$(STATESIM_TAGS)' -o $(GOBIN)/statesim ./cmd/statesim
 
 #? statesim-measure: Build with DB_ENGINE=leveldb|pebble and DB_SOURCE=module@branch-or-commit (or local checkout).
 statesim-measure:
@@ -43,7 +46,7 @@ statesim-measure:
 	trap 'rm -rf "$$tmp"' EXIT HUP INT TERM; \
 	cp go.mod "$$tmp/go.mod"; cp go.sum "$$tmp/go.sum"; \
 	GOWORK=off go mod edit -modfile="$$tmp/go.mod" -replace="$$module=$(DB_SOURCE)"; \
-	GOWORK=off go build -mod=mod -modfile="$$tmp/go.mod" -tags '$(STATESIM_TAGS)' \
+	GOWORK=off go build -mod=mod -modfile="$$tmp/go.mod" -ldflags '$(STATESIM_LDFLAGS)' -tags '$(STATESIM_TAGS)' \
 	  -o $(GOBIN)/statesim-$(DB_ENGINE)-measure ./cmd/statesim
 
 #? all: Build all packages and executables.

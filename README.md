@@ -9,9 +9,27 @@ Use dedicated experiment databases; they are not ordinary Geth datadirs.
 
 ```sh
 make statesim
-build/bin/statesim -blocks /data/mainnet.rlp -datadir /results/h \
+build/bin/statesim -blocks /data/mainnet.rlp \
   -until 6000000 -scheme H -db-engine leveldb
 ```
+
+The default root is `/ethereum/key-simulator-geth-v1.17.10` (`-root` overrides it).
+Each run creates `dbs/<timestamp-scheme-engine-auth>/` and
+`results/<timestamp-scheme-engine-auth>/`. Results include metrics, configuration
+and checkpoints; DB size measures only the DB directory.
+
+For repeated test runs, add `-careful-run`: it removes **only**
+`<root>/dbs/careful-run/` before starting, and creates a new results directory.
+The DB remains after exit, until the next careful run or manual deletion.
+An in-use DB is rejected. This option performs neither TRIM nor OS cache reset.
+It cannot be combined with `-resume` or `-db-dir`.
+
+For named locations, set both `-datadir /experiments/results/h-01` and
+`-db-dir /experiments/dbs/h-01`. `-datadir` is the result/checkpoint directory;
+an explicit `-datadir` alone keeps the legacy `<datadir>/chaindata` layout.
+Fresh runs reject existing result directories. To resume, use
+`-resume -datadir /experiments/results/h-01`; the DB path is read from `replay.json`.
+Results from a replaced careful-run DB remain readable but cannot resume it.
 
 Performance builds use upstream engines pinned in `go.mod`. Detailed LevelDB
 measurement requires the instrumentation fork, supplied as a local checkout or
@@ -126,6 +144,19 @@ DB/clean/dirty budgets are 2048/1024/1024. PBSS caps its write buffer at 256.
 These are budgets, not RSS limits. Preimages are disabled. State-only mode still
 serializes chain records in memory. Snapshots and PBSS history count toward disk size.
 
+For unattended Linux runs, an administrator can use
+`sudo visudo -f /etc/sudoers.d/statesim-drop-caches` to grant only the cache-reset command
+(replace `USERNAME` with the experiment account):
+
+```sudoers
+USERNAME ALL=(root) NOPASSWD: /usr/sbin/sysctl -w vm.drop_caches\=3
+```
+
+Each job must include `-drop-os-cache`. The simulator runs `sync` as the user,
+then invokes that exact command with `sudo -n`, before opening the DB.
+The simulator itself runs unprivileged. A failed sync or denied reset aborts
+the run. This resets host OS caches, not SSD caches or internal device state.
+
 Start each scheme from genesis in a fresh datadir. `-resume -until N` continues a
 compatible checkpoint; state-only resume scans the input prefix for chain context
 before opening the DB. Genesis, codec, auth suite, engine, compression, retention
@@ -156,7 +187,7 @@ Copy the binary to a fixed location and create a JSON plan:
   "version": 1,
   "lock_file": "/results/statesim.lock",
   "jobs": [{
-    "argv": ["/bench/statesim", "-blocks", "/data/mainnet.rlp", "-datadir", "/results/h-pebble", "-until", "6000000", "-scheme", "H", "-db-engine", "pebble"],
+    "argv": ["/bench/statesim", "-blocks", "/data/mainnet.rlp", "-datadir", "/results/h-pebble", "-db-dir", "/dbs/h-pebble", "-until", "6000000", "-scheme", "H", "-db-engine", "pebble"],
     "binary_sha256": "REPLACE_WITH_SHA256SUM_OF_BINARY",
     "cwd": "/bench",
     "env": {"GOMAXPROCS": "32"},
@@ -167,6 +198,8 @@ Copy the binary to a fixed location and create a JSON plan:
 
 Each output parent must exist and each job datadir must be new. Add jobs with
 explicit options and distinct datadirs; set the free-space reserve for the workload.
+Queued careful runs require an explicit `-root` and a unique `-datadir` per job;
+they reuse only `<root>/dbs/careful-run`, with no `-db-dir` or `clone_from`.
 
 ```sh
 python3 cmd/statesim/queue.py /results/queue.json --check
@@ -213,16 +246,41 @@ with `trie/incauth`; its reference trie is for tests. Experimental proofs use
   and Geth diagnostics. Disabled detailed counters are zero, not observations.
 - `leveldb_metrics.jsonl` or `pebble_metrics.jsonl`: native counters and optional
   `Detailed` DB statistics. Sampling does not flush the DB.
+- `disk_io.jsonl`: Linux device I/O counters, sampled every second by default
+  in both performance and detailed modes (`-disk-stats-interval=0` disables).
 - `replay.json`, `checkpoint.json`: configuration and durable restart metadata.
 
 Metric files contain matching run headers with effective options, cache budgets,
-build/dependency versions and performance/diagnostic mode. Counter differences
+build/dependency versions and performance/diagnostic mode. `Flags` includes all
+CLI defaults after resolving automatic values; `RuntimeEnvironment` records
+`GOGC`, `GOMEMLIMIT`, `GODEBUG` and `GOMAXPROCS` (empty means runtime defaults).
+`make statesim` and `make statesim-measure` stamp `SourceRevision` with the full
+Git commit and a `-dirty` suffix for local edits, including in Git worktrees.
+Use a clean committed build for comparisons; direct Go builds may report
+`unknown` when automatic VCS stamping is unavailable.
+The comparison script also checks these settings, block pacing, OS cache reset
+and device sampling options before accepting a comparison. Counter differences
 must stay within one RunID. Run headers and `simblocks.jsonl` disk samples also
 record `Filesystems.home` and `Filesystems.database`: paths, filesystem types,
 total/used/available bytes and usage percentages for the filesystems containing
 the user's home and DB. These are filesystem totals, not directory sizes;
 `free` means user-available space and `usedPercent` is `100*used/(used+free)`.
 Disk samples include UTC timestamps, including at clean stop/completion.
+Device I/O samples have UTC time, monotonic `ElapsedNS`, last imported block
+`Number`, and compact counter arrays whose names/units are in `diskstats-schema`.
+Sector size is 512 bytes. For adjacent samples within a RunID, divide read/write
+milliseconds by completed I/Os for average latency, counts/bytes by elapsed time
+for IOPS/throughput, and weighted I/O milliseconds by elapsed milliseconds for
+average outstanding I/Os. Skip counter resets and zero-I/O latency intervals;
+older kernels omit unsupported trailing fields. These are whole-device statistics,
+including other processes and compaction, without per-request latency percentiles.
+RAID/dm and member devices are separate views; do not sum them together. I/O busy
+time is approximate and is not an NVMe capacity percentage.
+The sampler retains no history in memory, uses a 256KiB output buffer, flushes
+the buffer every 10 seconds without fsync, and writes start/end samples. It runs
+independently of block processing, ends before optional verification/DB shutdown,
+and propagates read/write errors. Resumes append a new RunID; earlier I/O samples
+are retained, including any work beyond the restored checkpoint.
 Progress redraws at most 10Hz; summaries every 1,000
 blocks show total/recent speed. Remaining time uses a rolling 10,000-block window.
 

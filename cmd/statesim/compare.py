@@ -327,14 +327,16 @@ def paper_coverage(row):
 
 
 def native_profile(header):
-    keys = ('ConsoleInterval', 'Preimages', 'TxTimingScope', 'SchemaVersion', 'Config', 'Version', 'Go', 'OS', 'Arch', 'ChainConfig',
+    keys = ('ConsoleInterval', 'Preimages', 'TxTimingScope', 'SchemaVersion', 'Config', 'Version', 'SourceRevision', 'Go', 'OS', 'Arch', 'ChainConfig',
             'StateScheme', 'ArchiveMode', 'VerifyPoW', 'SnapshotLimit', 'Prefetch', 'SnapshotWait', 'StartingHead',
-            'GOMAXPROCS', 'BatchSize', 'PerformanceMode', 'DetailedMetrics', 'EngineOptions', 'AuthFormat', 'AuthImplementation',
+            'GOMAXPROCS', 'RuntimeEnvironment', 'BatchSize', 'PerformanceMode', 'DetailedMetrics', 'EngineOptions', 'AuthFormat', 'AuthImplementation',
             'AuthParallelPolicy', 'CheckpointInterval', 'DiskSizeInterval', 'DBStatsInterval', 'StateHistory',
             'TrienodeHistory', 'TrieDirtyMiB', 'EffectiveTrieDirtyMiB', 'CheckpointPolicy', 'Build', 'TxClassification')
     result = {key: header.get(key) for key in keys}
     result['DBStatsInterval'] = header.get('DBStatsInterval', header.get('DiskSizeInterval'))
     result['TxClassification'] = header.get('TxClassification', 'transaction-gas-limit-21000')
+    result['RunOptions'] = {key: header.get('Flags', {}).get(key)
+                            for key in ('block-delay', 'drop-os-cache', 'disk-stats-interval')}
     return result
 
 
@@ -791,6 +793,7 @@ def summarize_engine(directory, result):
 def comparison_profile(row, vary_auth=False, vary_engine=False, vary_compression=False, vary_retention=False):
     profile = json.loads(json.dumps(row['profile']))
     if row['format'] == 'native':
+        profile['Config'].pop('DatabasePath', None)
         replay = profile['Config']['Replay']
         for key in ('KeyScheme', 'Codec', 'EpochSize', 'StateDepth', 'StorageDepth', 'ShardPrefix', 'TileBlocks', 'TilePathPrefix', 'RunTargetNodes'):
             replay.pop(key, None)
