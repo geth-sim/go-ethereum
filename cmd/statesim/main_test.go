@@ -42,6 +42,15 @@ func TestReplayOSCachePreparation(t *testing.T) {
 		if (err == nil) != (test.syncExit == "0" && test.sudoExit == "0") {
 			t.Fatalf("cache preparation must propagate helper failure: %v", err)
 		}
+		if err != nil {
+			if !strings.Contains(err.Error(), "replay aborted before DB open") || !strings.Contains(err.Error(), "README.md#os-cache-reset") {
+				t.Fatalf("missing failure/recovery guidance: %v", err)
+			}
+			// Only permission failures should suggest changing sudo policy.
+			if strings.Contains(err.Error(), "NOPASSWD") != (test.syncExit == "0") {
+				t.Fatalf("incorrect recovery guidance for sync/sudo failure: %v", err)
+			}
+		}
 		want := "sync\n"
 		if test.syncExit == "0" {
 			want += "sudo\n-n\n/usr/sbin/sysctl\n-w\nvm.drop_caches=3\n"

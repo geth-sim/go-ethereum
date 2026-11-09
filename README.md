@@ -144,7 +144,23 @@ DB/clean/dirty budgets are 2048/1024/1024. PBSS caps its write buffer at 256.
 These are budgets, not RSS limits. Preimages are disabled. State-only mode still
 serializes chain records in memory. Snapshots and PBSS history count toward disk size.
 
-For unattended Linux runs, an administrator can use
+<a id="os-cache-reset"></a>
+
+For unattended Linux runs, run this once **as the experiment user** in an
+interactive terminal (sudo administrator authentication is required):
+
+```sh
+printf '%s ALL=(root) NOPASSWD: /usr/sbin/sysctl -w vm.drop_caches\\=3\n' "$(id -un)" | sudo sh -c 'set -eu
+statesim_rule=$(mktemp)
+trap "rm -f \"$statesim_rule\"" EXIT
+cat > "$statesim_rule"
+/usr/sbin/visudo -cf "$statesim_rule"
+install -o root -g root -m 0440 "$statesim_rule" /etc/sudoers.d/statesim-drop-caches'
+```
+
+This validates a temporary sudoers rule, then installs it with root ownership
+and mode 0440, replacing the dedicated `statesim-drop-caches` file.
+No editor is required. Alternatively, an administrator can use
 `sudo visudo -f /etc/sudoers.d/statesim-drop-caches` to grant only the cache-reset command
 (replace `USERNAME` with the experiment account):
 
@@ -154,8 +170,14 @@ USERNAME ALL=(root) NOPASSWD: /usr/sbin/sysctl -w vm.drop_caches\=3
 
 Each job must include `-drop-os-cache`. The simulator runs `sync` as the user,
 then invokes that exact command with `sudo -n`, before opening the DB.
-The simulator itself runs unprivileged. A failed sync or denied reset aborts
-the run. This resets host OS caches, not SSD caches or internal device state.
+The simulator itself runs unprivileged. A failed sync or reset aborts before
+the DB opens or any blocks execute, with an error and recovery guidance.
+Permission failures print the setup command above; if sudo is unavailable, an
+administrator must install the rule. A sync/filesystem or sysctl error must be
+resolved before retrying. Fresh runs may have already reserved their output
+directories; retry with a new `-datadir` or omit it for automatic naming.
+This resets host OS caches, not SSD caches or internal
+device state.
 
 Start each scheme from genesis in a fresh datadir. `-resume -until N` continues a
 compatible checkpoint; state-only resume scans the input prefix for chain context

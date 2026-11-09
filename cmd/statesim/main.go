@@ -560,6 +560,7 @@ func run() (runErr error) {
 		}
 	}()
 	console = newReplayConsole(os.Stderr, head, *until, *logInterval, replayStarted)
+	console.diskLabel = replayDiskLabel(replay, *dbEngine)
 	defer console.close()
 	console.printf("replay %d -> %d | scheme=%s epoch=%d A=%d S=%d | auth=%s/%s cache=%dMiB workers=%d\n", head, *until, *scheme, *epoch, *a, *s, *auth, *authMode, *authCache, *authWorkers)
 	console.printf("engine=%s/%s archive=%t state-only=%t prefetch=%t snapshot-cache=%dMiB | cache DB=%d trie=%d dirty=%dMiB | detailed trie=%t DB=%t\n", *dbEngine, *compression, cfg.ArchiveMode, replay.StateOnly, *prefetch, *snapshotCache, *dbCache, *trieCache, runInfo.EffectiveTrieDirtyMiB, *measure, *dbMeasure)
@@ -993,10 +994,43 @@ func recordDiskSize(enc *json.Encoder, path string, head uint64, console *replay
 	sample.Timestamp = time.Now().UTC()
 	sample.HistorySize = sample.StateHistorySize + sample.TrienodeHistorySize
 	if console != nil {
-		console.printf("disk block=%d total=%.3fGiB history=%.3fGiB (included)\n", head, float64(sample.DiskSize)/(1<<30), float64(sample.HistorySize)/(1<<30))
+		console.printf("disk block=%d total=%.3fGiB history=%.3fGiB (included) %s\n", head, float64(sample.DiskSize)/(1<<30), float64(sample.HistorySize)/(1<<30), console.diskLabel)
 	}
 	return enc.Encode(sample)
 }
+
+func replayDiskLabel(config *common.ReplayConfig, engine string) string {
+	key, auth := config.KeyScheme, config.Authentication
+	switch key {
+	case "VP", "JMT_fixed":
+		key = "VP*"
+	case "PV", "PrefixTree_fixed":
+		key = "PV*"
+	}
+	if config.CanonicalHashing() {
+		auth = "Keccak"
+	} else if config.AuthEnabled() {
+		switch auth {
+		case "keccak":
+			auth = "myHash"
+		case "gls254":
+			auth = "GLS"
+		}
+		if config.AuthCacheMiB > 0 {
+			auth += fmt.Sprintf("Cache %gGiB", float64(config.AuthCacheMiB)/1024)
+		}
+	} else {
+		auth = "none"
+	}
+	switch engine {
+	case "pebble":
+		engine = "Pebble"
+	case "leveldb":
+		engine = "LevelDB"
+	}
+	return fmt.Sprintf("[ Key: %s | Auth: %s | DB: %s ]", key, auth, engine)
+}
+
 func readReplayContext(stream *rlp.Stream, genesis *types.Block, head core.ReplayResult) (types.Blocks, error) {
 	recent := make(types.Blocks, 0, 513)
 	last := genesis.Hash()
@@ -1097,16 +1131,32 @@ func dropReplayOSCaches() error {
 	// Keep the simulator unprivileged; fail rather than silently measuring with
 	// a different cache state. No workload or database is open at this point.
 	if out, err := exec.Command("sync").CombinedOutput(); err != nil {
-		return fmt.Errorf("sync before OS cache reset failed: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("replay aborted before DB open: sync before OS cache reset failed: %w: %s\nFix the sync/filesystem error and retry; see README.md#os-cache-reset", err, strings.TrimSpace(string(out)))
 	}
 	// A sudoers rule can grant only this exact command and argument, without
 	// granting a root shell or allowing changes to other kernel parameters.
 	out, err := exec.Command("sudo", "-n", "/usr/sbin/sysctl", "-w", "vm.drop_caches=3").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("OS cache reset failed (requires noninteractive sudo): %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("replay aborted before DB open: OS cache reset failed: %w: %s\n\n%s", err, strings.TrimSpace(string(out)), replayCacheResetHelp)
 	}
 	return nil
 }
+
+const replayCacheResetHelp = `If sudo denied permission or requires a password, run this once in a terminal
+as the experiment user (administrator authentication is required):
+
+printf '%s ALL=(root) NOPASSWD: /usr/sbin/sysctl -w vm.drop_caches\\=3\n' "$(id -un)" | sudo sh -c 'set -eu
+statesim_rule=$(mktemp)
+trap "rm -f \"$statesim_rule\"" EXIT
+cat > "$statesim_rule"
+/usr/sbin/visudo -cf "$statesim_rule"
+install -o root -g root -m 0440 "$statesim_rule" /etc/sudoers.d/statesim-drop-caches'
+
+This validates and installs a rule allowing only the cache-reset command.
+Then retry with -drop-os-cache and a new results directory for a fresh run.
+If sudo is unavailable, ask an
+administrator to install the rule. Other sysctl errors must be resolved first.
+See README.md#os-cache-reset. No blocks were executed.`
 
 func openReplayDatabase(path, engine, compression string, cache, handles int) (ethdb.KeyValueStore, string, error) {
 	if err := validateDatabaseOptions(engine, compression); err != nil {
@@ -1228,6 +1278,7 @@ type replayConsole struct {
 	initial, head, target, interval, summaryHead uint64
 	progressHead                                 uint64
 	progressLine                                 bool
+	diskLabel                                    string
 	etaNext                                      int
 	etaWindow                                    [10]struct {
 		head uint64
