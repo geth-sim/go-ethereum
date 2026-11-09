@@ -235,6 +235,9 @@ func (t *StateTrie) UpdateStorageBatch(_ common.Address, keys [][]byte, values [
 
 // UpdateAccount will abstract the write of an account to the secure trie.
 func (t *StateTrie) UpdateAccount(address common.Address, acc *types.StateAccount, _ int) error {
+	if t.trie.auth != nil {
+		return t.UpdateAccountWithStorageAuth(address, acc, nil)
+	}
 	hk := crypto.Keccak256(address.Bytes())
 	data, err := rlp.EncodeToBytes(acc)
 	if err != nil {
@@ -251,6 +254,14 @@ func (t *StateTrie) UpdateAccount(address common.Address, acc *types.StateAccoun
 
 // UpdateAccountBatch attempts to update a list accounts in the batch manner.
 func (t *StateTrie) UpdateAccountBatch(addresses []common.Address, accounts []*types.StateAccount, _ []int) error {
+	if t.trie.auth != nil {
+		for i, addr := range addresses {
+			if err := t.UpdateAccountWithStorageAuth(addr, accounts[i], nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	var (
 		hkeys  = make([][]byte, 0, len(addresses))
 		values = make([][]byte, 0, len(accounts))

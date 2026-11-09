@@ -64,11 +64,13 @@ func (v *BlockValidator) ValidateBody(block *types.Block) error {
 	if err := v.bc.engine.VerifyUncles(v.bc, block); err != nil {
 		return err
 	}
-	if hash := types.CalcUncleHash(block.Uncles()); hash != header.UncleHash {
-		return fmt.Errorf("uncle root hash mismatch (header value %x, calculated %x)", header.UncleHash, hash)
-	}
-	if hash := types.DeriveSha(block.Transactions(), trie.NewStackTrie(nil)); hash != header.TxHash {
-		return fmt.Errorf("transaction root hash mismatch (header value %x, calculated %x)", header.TxHash, hash)
+	if cfg := v.bc.cfg.Replay; cfg == nil || !cfg.SkipBlockRootChecks {
+		if hash := types.CalcUncleHash(block.Uncles()); hash != header.UncleHash {
+			return fmt.Errorf("uncle root hash mismatch (header value %x, calculated %x)", header.UncleHash, hash)
+		}
+		if hash := types.DeriveSha(block.Transactions(), trie.NewStackTrie(nil)); hash != header.TxHash {
+			return fmt.Errorf("transaction root hash mismatch (header value %x, calculated %x)", header.TxHash, hash)
+		}
 	}
 
 	// Withdrawals are present after the Shanghai fork.
@@ -165,9 +167,10 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 		return nil
 	}
 	// The receipt Trie's root (R = (Tr [[H1, R1], ... [Hn, Rn]]))
-	receiptSha := res.receiptRoot()
-	if receiptSha != header.ReceiptHash {
-		return fmt.Errorf("invalid receipt root hash (remote: %x local: %x)", header.ReceiptHash, receiptSha)
+	if !v.skipReplayReceiptRoot(block) {
+		if receiptSha := res.receiptRoot(); receiptSha != header.ReceiptHash {
+			return fmt.Errorf("invalid receipt root hash (remote: %x local: %x)", header.ReceiptHash, receiptSha)
+		}
 	}
 	// Validate the parsed requests match the expected header value.
 	if header.RequestsHash != nil {
@@ -197,7 +200,14 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 	// Validate the state root against the received state root and throw
 	// an error if they don't match.
 	rules := v.config.Rules(header.Number, header.Difficulty.Sign() == 0, header.Time)
-	if root := statedb.IntermediateRoot(rules); header.Root != root {
+	root := statedb.IntermediateRoot(rules)
+	if err := statedb.Error(); err != nil {
+		return err
+	}
+	if v.bc.cfg.Replay != nil && !v.bc.cfg.Replay.CanonicalHashing() {
+		return nil
+	}
+	if header.Root != root {
 		return fmt.Errorf("invalid merkle root (remote: %x local: %x) dberr: %w", header.Root, root, statedb.Error())
 	}
 	return nil

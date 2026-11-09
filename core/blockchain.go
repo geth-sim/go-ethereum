@@ -173,6 +173,8 @@ const (
 
 // BlockChainConfig contains the configuration of the BlockChain object.
 type BlockChainConfig struct {
+	Replay        *common.ReplayConfig // research only; nil preserves normal Geth
+	OnReplayBlock func(ReplayResult)   // called after a successful canonical import
 	// Trie database related options
 	TrieCleanLimit       int           // Memory allowance (MB) to use for caching trie nodes in memory
 	TrieDirtyLimit       int           // Memory limit (MB) at which to start flushing dirty trie nodes to disk
@@ -270,6 +272,7 @@ func (cfg BlockChainConfig) WithNoAsyncFlush(on bool) *BlockChainConfig {
 func (cfg *BlockChainConfig) triedbConfig(isUBT bool) *triedb.Config {
 	config := &triedb.Config{
 		Preimages:         cfg.Preimages,
+		Replay:            cfg.Replay,
 		IsUBT:             isUBT,
 		BinTrieGroupDepth: cfg.BinTrieGroupDepth,
 	}
@@ -391,10 +394,17 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		cfg = DefaultConfig()
 	}
 
+	if err := initReplay(db, cfg); err != nil {
+		return nil, err
+	}
+
 	// Open trie database with provided config
 	enableVerkle, err := EnableUBTAtGenesis(db, genesis)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Replay != nil && enableVerkle {
+		return nil, errors.New("research replay requires MPT genesis")
 	}
 	triedb := triedb.NewDatabase(db, cfg.triedbConfig(enableVerkle))
 
@@ -563,7 +573,9 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 			bc.logger.OnGenesisBlock(bc.genesisBlock, alloc)
 		}
 	}
-	bc.setupSnapshot()
+	if err := bc.setupSnapshot(); err != nil {
+		return nil, err
+	}
 
 	// Rewind the chain in case of an incompatible config upgrade.
 	if compatErr != nil {
@@ -583,11 +595,11 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 	return bc, nil
 }
 
-func (bc *BlockChain) setupSnapshot() {
+func (bc *BlockChain) setupSnapshot() error {
 	// Short circuit if the chain is established with path scheme, as the
 	// state snapshot has been integrated into path database natively.
 	if bc.cfg.StateScheme == rawdb.PathScheme {
-		return
+		return nil
 	}
 	// Load any existing snapshot, regenerating it if loading failed
 	if bc.cfg.SnapshotLimit > 0 {
@@ -607,8 +619,16 @@ func (bc *BlockChain) setupSnapshot() {
 			NoBuild:    bc.cfg.SnapshotNoBuild,
 			AsyncBuild: !bc.cfg.SnapshotWait,
 		}
-		bc.snaps, _ = snapshot.New(snapconfig, bc.db, bc.triedb, head.Root)
+		root, err := bc.replaySnapshotRoot(head)
+		if err != nil {
+			return err
+		}
+		bc.snaps, err = snapshot.New(snapconfig, bc.db, bc.triedb, root)
+		if bc.cfg.Replay != nil {
+			return err // research runs must not silently fall back to snapshots off
+		}
 	}
+	return nil
 }
 
 // empty returns an indicator whether the blockchain is empty.
@@ -1432,8 +1452,11 @@ func (bc *BlockChain) Stop() {
 	// Ensure that the entirety of the state snapshot is journaled to disk.
 	var snapBase common.Hash
 	if bc.snaps != nil {
-		var err error
-		if snapBase, err = bc.snaps.Journal(bc.CurrentBlock().Root); err != nil {
+		root, err := bc.replaySnapshotRoot(bc.CurrentBlock())
+		if err == nil {
+			snapBase, err = bc.snaps.Journal(root)
+		}
+		if err != nil {
 			log.Error("Failed to journal state snapshot", "err", err)
 		}
 		bc.snaps.Release()
@@ -1456,8 +1479,16 @@ func (bc *BlockChain) Stop() {
 				if number := bc.CurrentBlock().Number.Uint64(); number > offset {
 					recent := bc.GetBlockByNumber(number - offset)
 
-					log.Info("Writing cached state to disk", "block", recent.Number(), "hash", recent.Hash(), "root", recent.Root())
-					if err := triedb.Commit(recent.Root(), true); err != nil {
+					if recent == nil {
+						continue
+					}
+					physical, err := bc.replaySnapshotRoot(recent.Header())
+					if err != nil {
+						log.Error("Failed to resolve recent state root", "err", err)
+						continue
+					}
+					log.Info("Writing cached state to disk", "block", recent.Number(), "hash", recent.Hash(), "root", physical)
+					if err := triedb.Commit(physical, true); err != nil {
 						log.Error("Failed to commit recent state trie", "err", err)
 					}
 				}
@@ -1773,12 +1804,34 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 			return err
 		}
 	}
-	// If node is running in path mode, skip explicit gc operation
-	// which is unnecessary in this mode.
+	if err != nil {
+		return err
+	}
+	if bc.cfg.Replay != nil {
+		bc.cfg.Replay.AdvanceRun(bc.cfg.Replay.Counters().WrittenNodes.Load())
+		var authRoot *common.Hash
+		if bc.cfg.Replay.AuthEnabled() {
+			a := statedb.AuthenticationRoot()
+			authRoot = &a
+		}
+		roots := bc.db.NewBatch()
+		defer roots.Close()
+		if err := writeReplayRoot(roots, block, root, bc.cfg.Replay, authRoot); err != nil {
+			return err
+		}
+		if err := roots.Write(); err != nil {
+			return err
+		}
+	}
+	// Native pathdb owns its buffering and retention policy.
 	if bc.triedb.Scheme() == rawdb.PathScheme {
 		return nil
 	}
-	// If we're running an archive node, always flush
+	if bc.cfg.Replay != nil {
+		flushStart := time.Now()
+		defer func() { bc.cfg.Replay.Counters().DiskCommits.Add(int64(time.Since(flushStart))) }()
+	}
+	// If we're running an archive node, always flush.
 	if bc.cfg.ArchiveMode {
 		return bc.triedb.Commit(root, false)
 	}
@@ -1816,7 +1869,13 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 				log.Info("State in memory for too long, committing", "time", bc.gcproc, "allowance", flushInterval, "optimum", float64(chosen-bc.lastWrite)/state.TriesInMemory)
 			}
 			// Flush an entire trie and restart the counters
-			bc.triedb.Commit(header.Root, true)
+			physical, err := bc.replaySnapshotRoot(header)
+			if err != nil {
+				return err
+			}
+			if err := bc.triedb.Commit(physical, true); err != nil {
+				return err
+			}
 			bc.lastWrite = chosen
 			bc.gcproc = 0
 		}
@@ -1901,6 +1960,9 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 		return 0, errChainStopped
 	}
 	defer bc.chainmu.Unlock()
+	if err := bc.prepareReplay(chain); err != nil {
+		return 0, err
+	}
 
 	_, n, err := bc.insertChain(context.Background(), chain, true, false) // No witness collection for mass inserts (would get super large)
 	return n, err
@@ -2085,6 +2147,14 @@ func (bc *BlockChain) insertChain(ctx context.Context, chain types.Blocks, setHe
 			return nil, it.index, err
 		}
 		res.stats.reportMetrics()
+		if bc.cfg.Replay != nil && bc.cfg.OnReplayBlock != nil {
+			root, err := bc.ReplayRoot(block.Hash())
+			if err != nil {
+				return nil, it.index, err
+			}
+			stats := bc.cfg.Replay.TakeStats()
+			bc.cfg.OnReplayBlock(ReplayResult{Number: block.NumberU64(), GasUsed: block.GasUsed(), PaymentTxTime: res.replayTxTimes[0], CallTxTime: res.replayTxTimes[1], PaymentTxLen: res.replayPayments, CallTxLen: len(block.Transactions()) - res.replayPayments, BlockHash: block.Hash(), CanonicalRoot: block.Root(), ReplayRoot: root, Stats: *res.stats, Research: stats})
+		}
 
 		// Log slow block only if a single block is inserted (usually after the
 		// initial sync) to not overwhelm the users.
@@ -2148,11 +2218,13 @@ func (bc *BlockChain) insertChain(ctx context.Context, chain types.Blocks, setHe
 // blockProcessingResult is a summary of block processing
 // used for updating the stats.
 type blockProcessingResult struct {
-	usedGas  uint64
-	procTime time.Duration
-	status   WriteStatus
-	witness  *stateless.Witness
-	stats    *ExecuteStats
+	replayTxTimes  [2]time.Duration
+	replayPayments int // Legacy simulator classification: receipt gas used == 21000.
+	usedGas        uint64
+	procTime       time.Duration
+	status         WriteStatus
+	witness        *stateless.Witness
+	stats          *ExecuteStats
 }
 
 func (bpr *blockProcessingResult) Witness() *stateless.Witness {
@@ -2318,6 +2390,20 @@ func (bc *BlockChain) trackPrefetch() bool {
 // ProcessBlock executes and validates the given block. If there was no error
 // it writes the block and associated state to database.
 func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, block *types.Block, config ExecuteConfig) (result *blockProcessingResult, blockEndErr error) {
+	if bc.cfg.Replay != nil {
+		if !config.WriteState || !config.WriteHead || config.MakeWitness || config.StatelessSelfValidation {
+			return nil, errors.New("research replay requires canonical persistent execution without witnesses")
+		}
+		parent, err := bc.ReplayRoot(block.ParentHash())
+		if err != nil {
+			return nil, err
+		}
+		parentRoot = parent.PhysicalRoot
+		bc.cfg.Replay.TakeStats()
+		bc.cfg.Replay.RestoreRun(parent.Run)
+		bc.cfg.Replay.SetVersion(block.NumberU64())
+	}
+
 	var (
 		err       error
 		startTime = time.Now()
@@ -2349,7 +2435,7 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 	// while processing transactions. Before Byzantium the prefetcher is mostly
 	// useless due to the intermediate root hashing after each transaction.
 	var witness *stateless.Witness
-	if bc.chainConfig.IsByzantium(block.Number()) {
+	if bc.chainConfig.IsByzantium(block.Number()) && (bc.cfg.Replay == nil || !bc.cfg.NoPrefetch) {
 		// Generate witnesses either if we're self-testing, or if it's the
 		// only block being inserted. A bit crude, but witnesses are huge,
 		// so we refuse to make an entire chain of them.
@@ -2487,16 +2573,27 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 		stats.StorageCommits = statedb.StorageCommits  // Storage commits are complete, we can mark them
 		stats.DatabaseCommit = statedb.DatabaseCommits // Database commits are complete, we can mark them
 	}
+
 	elapsed := time.Since(startTime) + 1 // prevent zero division
 	stats.TotalTime = elapsed
 	stats.MgasPerSecond = float64(res.GasUsed) * 1000 / float64(elapsed)
+	payments := 0
+	if bc.cfg.Replay != nil {
+		for _, receipt := range res.Receipts {
+			if receipt.GasUsed == 21000 {
+				payments++
+			}
+		}
+	}
 
 	return &blockProcessingResult{
-		usedGas:  res.GasUsed,
-		procTime: proctime,
-		status:   status,
-		witness:  witness,
-		stats:    stats,
+		replayPayments: payments,
+		replayTxTimes:  res.replayTxTimes,
+		usedGas:        res.GasUsed,
+		procTime:       proctime,
+		status:         status,
+		witness:        witness,
+		stats:          stats,
 	}, nil
 }
 

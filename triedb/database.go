@@ -31,11 +31,12 @@ import (
 
 // Config defines all necessary options for database.
 type Config struct {
-	Preimages         bool           // Flag whether the preimage of node key is recorded
-	IsUBT             bool           // Flag whether the db is holding a unified binary tree
-	BinTrieGroupDepth int            // Number of levels per serialized group in binary trie (1-8, default 8)
-	HashDB            *hashdb.Config // Configs for hash-based scheme
-	PathDB            *pathdb.Config // Configs for experimental path-based scheme
+	Replay            *common.ReplayConfig // nil for normal Geth
+	Preimages         bool                 // Flag whether the preimage of node key is recorded
+	IsUBT             bool                 // Flag whether the db is holding a unified binary tree
+	BinTrieGroupDepth int                  // Number of levels per serialized group in binary trie (1-8, default 8)
+	HashDB            *hashdb.Config       // Configs for hash-based scheme
+	PathDB            *pathdb.Config       // Configs for experimental path-based scheme
 }
 
 const DefaultBinTrieGroupDepth = 5
@@ -113,9 +114,22 @@ func NewDatabase(diskdb ethdb.Database, config *Config) *Database {
 		log.Crit("Both 'hash' and 'path' mode are configured")
 	}
 	if config.PathDB != nil {
-		db.backend = pathdb.New(diskdb, config.PathDB, config.IsUBT)
+		pathConfig := *config.PathDB
+		if config.Replay != nil && config.Replay.Measure {
+			pathConfig.Research = config.Replay.Counters()
+		}
+		db.backend = pathdb.New(diskdb, &pathConfig, config.IsUBT)
 	} else {
-		db.backend = hashdb.New(diskdb, config.HashDB)
+		hashConfig := config.HashDB
+		if config.Replay != nil && config.Replay.Measure {
+			local := *hashdb.Defaults
+			if hashConfig != nil {
+				local = *hashConfig
+			}
+			local.Research = config.Replay.Counters()
+			hashConfig = &local
+		}
+		db.backend = hashdb.New(diskdb, hashConfig)
 	}
 	return db
 }
@@ -411,3 +425,6 @@ func (db *Database) SnapshotCompleted() bool {
 func (db *Database) BinTrieGroupDepth() int {
 	return db.config.BinTrieGroupDepth
 }
+
+// ReplayConfig returns the optional, database-local research configuration.
+func (db *Database) ReplayConfig() *common.ReplayConfig { return db.config.Replay }

@@ -380,7 +380,11 @@ func (bc *BlockChain) TxIndexDone() bool {
 
 // HasState checks if state trie is fully present in the database or not.
 func (bc *BlockChain) HasState(hash common.Hash) bool {
-	_, err := bc.triedb.NodeReader(hash)
+	physical, err := bc.replayStateRoot(hash)
+	if err != nil {
+		return false
+	}
+	_, err = bc.triedb.NodeReader(physical)
 	return err == nil
 }
 
@@ -391,6 +395,14 @@ func (bc *BlockChain) HasBlockAndState(hash common.Hash, number uint64) bool {
 	block := bc.GetBlock(hash, number)
 	if block == nil {
 		return false
+	}
+	if bc.cfg.Replay != nil {
+		root, err := bc.ReplayRoot(block.Hash())
+		if err != nil {
+			return false
+		}
+		_, err = bc.triedb.NodeReader(root.PhysicalRoot)
+		return err == nil
 	}
 	return bc.HasState(block.Root())
 }
@@ -424,6 +436,11 @@ func (bc *BlockChain) State() (*state.StateDB, error) {
 // StateAt returns a new mutable state with the given root, at the block with
 // the given number and time.
 func (bc *BlockChain) StateAt(root common.Hash, number *big.Int, time uint64) (*state.StateDB, error) {
+	var err error
+	root, err = bc.replayStateRoot(root)
+	if err != nil {
+		return nil, err
+	}
 	if bc.chainConfig.IsUBT(number, time) {
 		return state.New(root, state.NewUBTDatabase(bc.triedb, bc.codedb))
 	}
@@ -433,6 +450,9 @@ func (bc *BlockChain) StateAt(root common.Hash, number *big.Int, time uint64) (*
 // StateAtForkBoundary returns a new mutable state based on the parent state
 // and the given header, handling the transition across the UBT fork.
 func (bc *BlockChain) StateAtForkBoundary(parent *types.Header, header *types.Header) (*state.StateDB, error) {
+	if bc.cfg.Replay != nil {
+		return bc.StateAt(parent.Root, parent.Number, parent.Time)
+	}
 	// The parent is already in the UBT fork.
 	if bc.chainConfig.IsUBT(parent.Number, parent.Time) {
 		return state.New(parent.Root, state.NewUBTDatabase(bc.triedb, bc.codedb))

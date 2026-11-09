@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -39,8 +40,11 @@ import (
 //
 // Trie is not safe for concurrent use.
 type Trie struct {
-	root  node
-	owner common.Hash
+	replay   *common.ReplayConfig
+	auth     *trieAuth
+	authRoot common.Hash
+	root     node
+	owner    common.Hash
 
 	// Flag whether the commit operation is already performed. If so the
 	// trie is not usable(latest states is invisible).
@@ -70,7 +74,9 @@ func (t *Trie) newFlag() nodeFlag {
 // Copy returns a copy of Trie.
 func (t *Trie) Copy() *Trie {
 	return &Trie{
-		root:           copyNode(t.root),
+		root:   copyNode(t.root),
+		replay: t.replay,
+		auth:   t.auth, authRoot: t.authRoot,
 		owner:          t.owner,
 		committed:      t.committed,
 		unhashed:       t.unhashed,
@@ -98,12 +104,18 @@ func New(id *ID, db database.NodeDatabase) (*Trie, error) {
 		opTracer:       newOpTracer(),
 		prevalueTracer: NewPrevalueTracer(),
 	}
+	if research, ok := db.(interface{ ReplayConfig() *common.ReplayConfig }); ok {
+		trie.replay = research.ReplayConfig()
+	}
 	if id.Root != (common.Hash{}) && id.Root != types.EmptyRootHash {
 		rootnode, err := trie.resolveAndTrack(id.Root[:], nil)
 		if err != nil {
 			return nil, err
 		}
 		trie.root = rootnode
+	}
+	if err := trie.configureAuthentication(); err != nil {
+		return nil, err
 	}
 	return trie, nil
 }
@@ -419,7 +431,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 			if !dirty || err != nil {
 				return false, n, err
 			}
-			return true, &shortNode{n.Key, nn, t.newFlag()}, nil
+			return true, &shortNode{n.Key, nn, t.authShortFlag(n)}, nil
 		}
 		// Otherwise branch out at the index where they differ.
 		branch := &fullNode{flags: t.newFlag()}
@@ -427,6 +439,9 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		_, branch.Children[n.Key[matchlen]], err = t.insert(nil, append(prefix, n.Key[:matchlen+1]...), n.Key[matchlen+1:], n.Val)
 		if err != nil {
 			return false, nil, err
+		}
+		if old, ok := branch.Children[n.Key[matchlen]].(*shortNode); ok {
+			old.flags = t.authShortFlag(n)
 		}
 		_, branch.Children[key[matchlen]], err = t.insert(nil, append(prefix, key[:matchlen+1]...), key[matchlen+1:], value)
 		if err != nil {
@@ -445,11 +460,15 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		return true, &shortNode{key[:matchlen], branch, t.newFlag()}, nil
 
 	case *fullNode:
-		dirty, nn, err := t.insert(n.Children[key[0]], append(prefix, key[0]), key[1:], value)
+		oldChild, flags, err := t.authBeforeChild(n, key[0], append(prefix, key[0]))
+		if err != nil {
+			return false, n, err
+		}
+		dirty, nn, err := t.insert(oldChild, append(prefix, key[0]), key[1:], value)
 		if !dirty || err != nil {
 			return false, n, err
 		}
-		n.flags = t.newFlag()
+		n.flags = flags
 		n.Children[key[0]] = nn
 		return true, n, nil
 
@@ -497,7 +516,7 @@ func (t *Trie) UpdateBatch(keys [][]byte, values [][]byte) error {
 	// Insert the entries sequentially if there are not too many
 	// trie nodes in the trie.
 	fn, ok := t.root.(*fullNode)
-	if !ok || len(keys) < parallelUpdateThreshold {
+	if (t.replay != nil && t.replay.Measure) || !ok || len(keys) < parallelUpdateThreshold {
 		return t.updateSequential(keys, values)
 	}
 	// Group the entries by the first nibble of the (hex) key, so that each group
@@ -528,7 +547,18 @@ func (t *Trie) UpdateBatch(keys [][]byte, values [][]byte) error {
 		return t.updateSequential(keys, values)
 	}
 	// Execute the trie updates in concurrent mode
-	fn.flags = t.newFlag()
+	if t.auth != nil {
+		for pos := range ikeys {
+			old, flags, err := t.authBeforeChild(fn, pos, []byte{pos})
+			if err != nil {
+				return err
+			}
+			fn.Children[pos] = old
+			fn.flags = flags
+		}
+	} else {
+		fn.flags = t.newFlag()
+	}
 	for pos, ks := range ikeys {
 		eg.Go(func() error {
 			vs := ivals[pos]
@@ -635,17 +665,21 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 			// always creates a new slice) instead of append to
 			// avoid modifying n.Key since it might be shared with
 			// other nodes.
-			return true, &shortNode{slices.Concat(n.Key, child.Key), child.Val, t.newFlag()}, nil
+			return true, &shortNode{slices.Concat(n.Key, child.Key), child.Val, t.authShortFlag(child)}, nil
 		default:
 			return true, &shortNode{n.Key, child, t.newFlag()}, nil
 		}
 
 	case *fullNode:
-		dirty, nn, err := t.delete(n.Children[key[0]], append(prefix, key[0]), key[1:])
+		oldChild, flags, err := t.authBeforeChild(n, key[0], append(prefix, key[0]))
+		if err != nil {
+			return false, n, err
+		}
+		dirty, nn, err := t.delete(oldChild, append(prefix, key[0]), key[1:])
 		if !dirty || err != nil {
 			return false, n, err
 		}
-		n.flags = t.newFlag()
+		n.flags = flags
 		n.Children[key[0]] = nn
 
 		// Because n is a full node, it must've contained at least two children
@@ -695,7 +729,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 					t.opTracer.onDelete(append(prefix, byte(pos)))
 
 					k := append([]byte{byte(pos)}, cnode.Key...)
-					return true, &shortNode{k, cnode.Val, t.newFlag()}, nil
+					return true, &shortNode{k, cnode.Val, t.authShortFlag(cnode)}, nil
 				}
 			}
 			// Otherwise, n is replaced by a one-nibble short node
@@ -856,11 +890,30 @@ func (t *Trie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 
 // hashRoot calculates the root hash of the given trie
 func (t *Trie) hashRoot() []byte {
+	if t.replay != nil {
+		start := time.Now()
+		defer func() {
+			elapsed := int64(time.Since(start))
+			if t.owner == (common.Hash{}) {
+				t.replay.Counters().AccountHashes.Add(elapsed)
+			} else {
+				t.replay.Counters().StorageHashes.Add(elapsed)
+			}
+		}()
+	}
+	if t.auth != nil {
+		if err := t.authenticateRoot(); err != nil {
+			panic(err)
+		}
+	}
 	if t.root == nil {
 		return types.EmptyRootHash.Bytes()
 	}
 	// If the number of changes is below 100, we let one thread handle it
-	h := newHasher(t.unhashed >= 100)
+	h := newHasher(t.unhashed >= 100 && (t.replay == nil || !t.replay.Measure))
+	if t.replay != nil && (!t.replay.CanonicalHashing() || t.replay.Measure) {
+		h.replay, h.owner, h.version = t.replay, t.owner, t.replay.Version()
+	}
 	defer func() {
 		returnHasherToPool(h)
 		t.unhashed = 0
@@ -882,4 +935,6 @@ func (t *Trie) reset() {
 	t.opTracer.reset()
 	t.prevalueTracer.Reset()
 	t.committed = false
+	t.auth = nil
+	t.authRoot = common.Hash{}
 }

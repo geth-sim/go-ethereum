@@ -22,6 +22,7 @@ import (
 	"math"
 	"math/big"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -69,6 +70,12 @@ func (p *StateProcessor) Process(ctx context.Context, block *types.Block, stated
 	if supportsParallelExecution(block, p.chainConfig(), statedb.Witness() != nil, cfg.Tracer != nil, cfg.DisableParallelExecution) {
 		return p.processParallel(ctx, block, statedb, jumpDestCache, precompileCache, cfg)
 	}
+	hashReceipts := true
+	replay := statedb.Database().TrieDB().ReplayConfig()
+	var txTimes [2]time.Duration
+	if replay := statedb.Database().TrieDB().ReplayConfig(); replay != nil {
+		hashReceipts = !replay.SkipBlockRootChecks && !(replay.SkipIntermediateRoot && !p.chainConfig().IsByzantium(block.Number()))
+	}
 	var (
 		config      = p.chainConfig()
 		receipts    = make(types.Receipts, 0, len(block.Transactions()))
@@ -83,7 +90,7 @@ func (p *StateProcessor) Process(ctx context.Context, block *types.Block, stated
 		// ready when the validator asks. With a tracer attached the blooms
 		// stay in the loop, it is handed every receipt through OnTxEnd.
 		eagerBloom = cfg.Tracer != nil
-		pipeline   = newDigestPipeline(len(block.Transactions()), eagerBloom)
+		pipeline   = newDigestPipeline(len(block.Transactions()), eagerBloom, hashReceipts)
 	)
 	// Run out the pipeline on the paths that abandon the block half way through.
 	defer pipeline.abandon()
@@ -128,9 +135,20 @@ func (p *StateProcessor) Process(ctx context.Context, block *types.Block, stated
 			return nil, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
 		statedb.SetTxContext(tx.Hash(), i, uint32(i+1))
+		var txStart time.Time
+		if replay != nil {
+			txStart = time.Now()
+		}
 		receipt, bal, err := applyTransactionWithEVM(ctx, msg, gp, statedb, blockNumber, blockHash, context.Time, tx, evm, eagerBloom)
 		if err != nil {
 			return nil, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+		}
+		if replay != nil {
+			slot := 1
+			if receipt.GasUsed == 21000 {
+				slot = 0
+			}
+			txTimes[slot] += time.Since(txStart)
 		}
 		receipts = append(receipts, receipt)
 		pipeline.feedReceipt(receipt)
@@ -156,11 +174,12 @@ func (p *StateProcessor) Process(ctx context.Context, block *types.Block, stated
 	pipeline.joinReceipts()
 
 	return &ProcessResult{
-		Receipts: receipts,
-		Requests: requests,
-		Logs:     allLogs,
-		GasUsed:  gp.Used(),
-		pipeline: pipeline,
+		Receipts:      receipts,
+		Requests:      requests,
+		Logs:          allLogs,
+		GasUsed:       gp.Used(),
+		pipeline:      pipeline,
+		replayTxTimes: txTimes,
 	}, nil
 }
 
@@ -282,7 +301,7 @@ func applyTransactionWithEVM(ctx context.Context, msg *Message, gp *GasPool, sta
 	}
 	// Update the state with pending changes.
 	var root []byte
-	if evm.ChainConfig().IsByzantium(blockNumber) {
+	if evm.ChainConfig().IsByzantium(blockNumber) || skipReplayIntermediateRoot(statedb) {
 		bal = evm.StateDB.Finalise(evm.GetRules())
 	} else {
 		root = statedb.IntermediateRoot(evm.GetRules()).Bytes()

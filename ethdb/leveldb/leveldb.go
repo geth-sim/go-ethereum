@@ -60,8 +60,13 @@ const (
 // functionality it also supports batch writes and iterating over the keyspace in
 // binary-alphabetical order.
 type Database struct {
-	fn string      // filename for reporting
-	db *leveldb.DB // LevelDB instance
+	fn        string      // filename for reporting
+	db        *leveldb.DB // LevelDB instance
+	readStats interface {
+		GetWithReadStats([]byte, string) ([]byte, error)
+	}
+
+	readStatsHashKeys bool // 32-byte hashdb locators; native PBSS stays unclassified
 
 	compTimeMeter       *metrics.Meter // Meter for measuring the total time spent in database compaction
 	compReadMeter       *metrics.Meter // Meter for measuring the data read during compaction
@@ -191,7 +196,19 @@ func (db *Database) Has(key []byte) (bool, error) {
 
 // Get retrieves the given key if it's present in the key-value store.
 func (db *Database) Get(key []byte) ([]byte, error) {
-	dat, err := db.db.Get(key, nil)
+	var dat []byte
+	var err error
+	if db.readStats != nil {
+		kind := "other"
+		if db.readStatsHashKeys && len(key) == 32 {
+			kind = "trie"
+		} else if len(key) == 33 && key[0] == 'c' {
+			kind = "code"
+		}
+		dat, err = db.readStats.GetWithReadStats(key, kind)
+	} else {
+		dat, err = db.db.Get(key, nil)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -310,6 +327,64 @@ func (db *Database) Stat() (string, error) {
 	message += fmt.Sprintf("WriteDelayCount:%d WriteDelayDuration:%s Paused:%t\n", stats.WriteDelayCount, common.PrettyDuration(stats.WriteDelayDuration), stats.WritePaused)
 	message += fmt.Sprintf("Snapshots:%d Iterators:%d\n", stats.AliveSnapshots, stats.AliveIterators)
 	return message, nil
+}
+
+// Metrics snapshots existing engine counters without enabling extra profiling.
+func (db *Database) Metrics() (leveldb.DBStats, error) {
+	var stats leveldb.DBStats
+	err := db.db.Stats(&stats)
+	return stats, err
+}
+
+// EnableReadStats requires the optional instrumented LevelDB fork. Ordinary
+// builds keep their original dependency and fail explicitly if profiling is requested.
+func (db *Database) EnableReadStats(hashKeys bool) error {
+	profiler, ok := any(db.db).(interface {
+		EnableReadStats()
+		ReadStatsVersion() int
+		GetWithReadStats([]byte, string) ([]byte, error)
+	})
+	if !ok || profiler.ReadStatsVersion() != 3 {
+		return errors.New("LevelDB detailed metrics require the measure-read-stats-v3 build")
+	}
+	profiler.EnableReadStats()
+	db.readStats = profiler
+	db.readStatsHashKeys = hashKeys
+	return nil
+}
+
+func (db *Database) ReadStatsJSON() ([]byte, error) {
+	profiler, ok := any(db.db).(interface{ ReadStatsJSON() ([]byte, error) })
+	if !ok {
+		return nil, errors.New("LevelDB detailed metrics are unavailable in this build")
+	}
+	return profiler.ReadStatsJSON()
+}
+
+// SyncImmutableKey rewrites an existing value with Sync=true to durably order
+// preceding writes before a replay checkpoint. It adds no metadata key. The
+// caller must stop imports and prevent changes to the value (an archive node
+// or the journal of a stopped, read-only pathdb) throughout this call;
+// this is not a replacement for concurrent, general-purpose SyncKeyValue.
+func (db *Database) SyncImmutableKey(key []byte) error {
+	value, err := db.db.Get(key, nil)
+	if err != nil {
+		return err
+	}
+	return db.db.Put(key, value, &opt.WriteOptions{Sync: true})
+}
+
+// SyncAbsentKey syncs preceding writes without adding a live key. Use only with
+// imports stopped and a key that must remain absent (the empty trie root).
+func (db *Database) SyncAbsentKey(key []byte) error {
+	present, err := db.db.Has(key, nil)
+	if err != nil {
+		return err
+	}
+	if present {
+		return errors.New("cannot sync an absent key that exists")
+	}
+	return db.db.Delete(key, &opt.WriteOptions{Sync: true})
 }
 
 // Compact flattens the underlying data store for the given key range. In essence,

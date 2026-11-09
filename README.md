@@ -1,4 +1,277 @@
+# State replay simulator
+
+`cmd/statesim` replays signed block RLP through Geth v1.17.10's native
+`BlockChain.InsertChain`, with experimental trie keys and authentication.
+It preserves transaction execution, sender recovery, fork rules and trie commits.
+Use dedicated experiment databases; they are not ordinary Geth datadirs.
+
+## Build and run
+
+```sh
+make statesim
+build/bin/statesim -blocks /data/mainnet.rlp -datadir /results/h \
+  -until 6000000 -scheme H -db-engine leveldb
+```
+
+Performance builds use upstream engines pinned in `go.mod`. Detailed LevelDB
+measurement requires the instrumentation fork, supplied as a local checkout or
+published `module@branch-or-commit`:
+
+```sh
+make statesim-measure DB_ENGINE=leveldb DB_SOURCE=/path/to/goleveldb
+build/bin/statesim-leveldb-measure -blocks /data/mainnet.rlp \
+  -datadir /results/h-detail -until 6000000 -scheme H \
+  -db-engine leveldb -measure -db-measure
+```
+
+The fork must expose `EnableReadStats`, `ReadStatsVersion() == 3`,
+`GetWithReadStats` and `ReadStatsJSON`. The build uses a temporary modfile;
+repository dependencies remain unchanged. A remote branch resolves to a concrete
+version recorded in result headers; use that version/commit to reproduce a run.
+Local checkout revisions and uncommitted edits are **not** recorded automatically.
+Keep the same upstream engine revision beneath performance/diagnostic builds.
+`DB_ENGINE=pebble` supports the same replacement mechanism, but **detailed Pebble
+instrumentation is not implemented**. Unsupported `-db-measure` requests fail.
+
+Optional GLS authentication requires the pinned native backend (Linux amd64,
+Python 3.10 and a C++ compiler; dependencies are prepared under `build/cache`):
+
+```sh
+python3 build/gls254.py
+make statesim STATESIM_TAGS=gls254
+```
+
+## Prepare block input
+
+Input is an uncompressed stream of signed Ethereum blocks, not a state dump.
+MariaDB is optional. For mainnet 0..10M, Geth can download Era1 history, import
+blocks/receipts into a preparation database, and export RLP without executing
+transactions or rebuilding state. Choose a server from the
+[history endpoints](https://eth-clients.github.io/history-endpoints/).
+
+```sh
+make geth
+build/bin/geth --mainnet --datadir /data/block-source download-era \
+  --server https://mainnet.era1.nimbus.team --block 0-10000000
+```
+
+Era1 files cover 8,192-block epochs and downloads are checksum-verified.
+This Geth version does not create the manifest needed by `import-history`;
+generate it from the built-in checksums for exactly the downloaded files:
+
+```sh
+python3 - <<'PYCODE'
+from pathlib import Path
+folder = Path('/data/block-source/geth/chaindata/ancient/chain/era')
+known = {name: digest for digest, name in
+         (line.split() for line in Path('internal/era/eradl/checksums_mainnet.txt').read_text().splitlines())}
+files = sorted(folder.glob('mainnet-*.era1'))
+assert files, 'No Era1 files downloaded'
+(folder / 'checksums.txt').write_text(''.join('0x' + known[f.name] + '\n' for f in files))
+PYCODE
+build/bin/geth --mainnet --datadir /data/block-source import-history --era.format era1 \
+  /data/block-source/geth/chaindata/ancient/chain/era
+
+test ! -e /data/mainnet.rlp.partial && test ! -e /data/mainnet.rlp && \
+  build/bin/geth --datadir /data/block-source export /data/mainnet.rlp.partial 0 10000000 && \
+  mv /data/mainnet.rlp.partial /data/mainnet.rlp
+```
+
+Use a fresh preparation DB: `import-history` expects contiguous history from
+genesis. Allow space for downloads, preparation DB and RLP. If a stopped Geth DB
+already contains all block bodies, only the export step is needed; historical
+state is unnecessary. Export includes both endpoints and appends to existing
+files when given a range, hence the fresh-file checks above.
+
+The optional SQL adapter requires `pymysql`, `rlp` and `eth_hash`. Keep connection
+credentials in an external local module:
+
+```sh
+python3 cmd/statesim/export.py --db-utils /private/db_utils.py \
+  --last 10000000 --output /data/mainnet.rlp
+```
+
+The adapter verifies reconstructed hashes and supports transaction types 0/1/2
+through London. It writes `.partial`, syncs and publishes the final name only on
+success, without overwriting existing files. Failed exports retain the partial
+file; automatic export resume is not supported. `--output -` streams to stdout.
+
+A larger RLP serves any smaller `-until` target. A partial file is usable only if
+the target is fully written; replay does not wait at EOF. To extend the input,
+export only the new range (`--first` for the SQL adapter) and append its completed
+suffix. Preserve the original length to recover an interrupted append. Finish
+input preparation before performance measurements.
+
+## Configuration and restart
+
+Use `build/bin/statesim -h` for all flags. Sizes below are MiB.
+
+| Option | Default and meaning |
+| --- | --- |
+| `-db-engine`, `-compression` | `pebble`, `snappy`; LevelDB/Pebble, Snappy/none, and Zstd for Pebble. Other engine policies stay native. |
+| `-archive` | `true` for hashdb: flush each block and retain history. `false` uses native dirty buffering/GC. PBSS supports native full mode only. |
+| `-store-chain-data` | `false`: persist trie nodes/code; chain records/root mappings use a bounded 512-block memory window. `true` also persists chain data. |
+| `-prefetch`, `-snapshot-cache` | `false`, `0`. A positive snapshot budget enables hashdb snapshots; PBSS always stores flat state. |
+| `-cache`, `-db-cache`, `-trie-cache` | Base 4096; DB gets 50%, clean trie gets the remainder after dirty/snapshot budgets. Explicit DB/trie sizes override allocation. |
+| `-auth-cache` | Additional authentication cache, separate from Geth/DB caches; default 0. |
+| `-drop-os-cache` | `false`; Linux `sync` + `drop_caches=3` before DB open. Requires noninteractive sudo; failure aborts. |
+| `-measure`, `-db-measure` | `false`; either enables diagnostic mode, whose timings are not performance results. |
+| `-disk-size-interval`, `-db-stats-interval` | 10,000 and 100,000 blocks; 0 disables periodic samples. |
+| `-checkpoint-interval` | 10,000 for archive hashdb; non-archive/PBSS checkpoint only on clean stop. |
+| `-verify-block-roots`, `-verify-state` | `false`; skip trusted-input tx/uncle/receipt commitment rechecks and final full-state audit. State/auth roots are still calculated. |
+| `-skip-intermediate-root` | `true`; hash at block end, including pre-Byzantium blocks. Transaction finalisation remains. |
+
+With snapshots off, archive DB/clean budgets are 2048/2048; non-archive
+DB/clean/dirty budgets are 2048/1024/1024. PBSS caps its write buffer at 256.
+These are budgets, not RSS limits. Preimages are disabled. State-only mode still
+serializes chain records in memory. Snapshots and PBSS history count toward disk size.
+
+Start each scheme from genesis in a fresh datadir. `-resume -until N` continues a
+compatible checkpoint; state-only resume scans the input prefix for chain context
+before opening the DB. Genesis, codec, auth suite, engine, compression, retention
+and storage policy must match. Cache/worker/measurement options may change;
+counters and metadata receive a new RunID.
+
+SIGINT/SIGTERM finish the current batch. Archive checkpoints sync state writes
+before atomically publishing `checkpoint.json`; resume trims later result rows.
+Non-archive/PBSS use native shutdown flush/journaling and reject unclean restart.
+State-only DBs need checkpoint metadata because chain context is not persisted.
+Use cleanly stopped copies for comparisons; archive crashes can leave later,
+unreferenced nodes. Resumed application caches start cold.
+
+Replay supports append-only MPT input before Amsterdam, with versions below 2^32.
+PoW seals are skipped; sender recovery, execution, gas/bloom and header/uncle checks
+remain. H/PBSS check canonical state roots; experimental roots are separate.
+`-verify-state` adds an untimed authentication audit and canonical reconstruction
+from persisted leaves. Historical receipt verification requires native
+intermediate roots as well as `-verify-block-roots`.
+
+## Sequential experiments
+
+`queue.py` runs jobs sequentially on Linux using the Python standard library.
+Copy the binary to a fixed location and create a JSON plan:
+
+```json
+{
+  "version": 1,
+  "lock_file": "/results/statesim.lock",
+  "jobs": [{
+    "argv": ["/bench/statesim", "-blocks", "/data/mainnet.rlp", "-datadir", "/results/h-pebble", "-until", "6000000", "-scheme", "H", "-db-engine", "pebble"],
+    "binary_sha256": "REPLACE_WITH_SHA256SUM_OF_BINARY",
+    "cwd": "/bench",
+    "env": {"GOMAXPROCS": "32"},
+    "min_free_gib": 1500
+  }]
+}
+```
+
+Each output parent must exist and each job datadir must be new. Add jobs with
+explicit options and distinct datadirs; set the free-space reserve for the workload.
+
+```sh
+python3 cmd/statesim/queue.py /results/queue.json --check
+screen -L -Logfile /results/queue.log -dmS statesimQueue \
+  python3 -u "$PWD/cmd/statesim/queue.py" /results/queue.json
+```
+
+Transitions require exit code zero, a `complete` result at the target and a
+matching checkpoint. Early stops/errors stop the queue. A shared lock prevents
+concurrent queues and remains held by a child if its runner dies. Binary checksums
+prevent silent rebuilds. `queue.state.json` records transitions/failures; screen
+survives disconnection, not reboot. Running jobs are never automatically restarted
+or overwritten; inspect failures and use a new plan for retries.
+
+For checkpoint comparisons, add `"clone_from": {"datadir": "/results/source",
+"checkpoint_sha256": "..."}` and `-resume`. The closed source must be archive,
+state-only hashdb on a filesystem supporting `cp --reflink=always`. Clones are
+independent and retain the source; exclude warmup and reverse run order in repeats.
+An optional `after` object waits for an existing wrapper process: supply
+`process` from `queue.identity(pid)`, `exit_file`, `datadir` and `target`.
+The wrapper must record its exit code before exiting.
+
+## Schemes and authentication
+
+`common/research.go` defines configuration and encoders. Hashdb schemes retain
+32-byte child reference = DB key. VP/PV are VP*/PV* (`JMT_fixed`/`PrefixTree_fixed`).
+Other presets include Outward/OutwardStorage, OutwardSplit, VPRight, EpochPath,
+TPV, SplitPVHot, DepthSplit, DepthEpoch, ShardVP, DualVP, RunPath, ForestVP,
+ATileVP, JMT, PrefixTree, their balanced variants, HalfPath and TH.
+PBSS uses native pathdb and Keccak references/proofs. Custom encoders use
+`ReplayConfig.EncodeKey` with a unique versioned codec ID and thread-safe code.
+
+`-auth none` selects plain keys (H retains Keccak); `keccak` computes full-node
+myHash-style commitments. `ristretto255`, `p256`, `gls254` use incremental curves.
+`-auth-mode auto` selects full for Keccak and incremental for curves.
+`-auth-workers` accepts 1..16; curve cache modes are unified/accumulator/contribution.
+Keccak caches child commitments. `trie/authentication.go` integrates native tries
+with `trie/incauth`; its reference trie is for tests. Experimental proofs use
+`AuthenticationProof`/`incauth.Verify`, separately from Ethereum consensus roots.
+
+## Results and analysis
+
+- `simblocks.jsonl`: block/batch timings, roots, transactions, disk/cache samples
+  and Geth diagnostics. Disabled detailed counters are zero, not observations.
+- `leveldb_metrics.jsonl` or `pebble_metrics.jsonl`: native counters and optional
+  `Detailed` DB statistics. Sampling does not flush the DB.
+- `replay.json`, `checkpoint.json`: configuration and durable restart metadata.
+
+Metric files contain matching run headers with effective options, cache budgets,
+build/dependency versions and performance/diagnostic mode. Counter differences
+must stay within one RunID. Progress redraws at most 10Hz; summaries every 1,000
+blocks show total/recent speed. Remaining time uses a rolling 10,000-block window.
+
+```sh
+python3 cmd/statesim/compare.py --interval after --start 5000000 --end 6000000 \
+  --window 100000 --compare H=/results/h VP=/results/vp Outward=/results/outward \
+  --out /results/comparison
+```
+
+`after` means `(start,end]`; default `legacy` means `[start,end)`. Disk size is after
+`end`; missing values are NA. The first input is the reference. `--vary-auth`,
+`--vary-engine`, `--vary-compression`, `--vary-retention` permit the named differences;
+other mismatched conditions and restart-spanning intervals are rejected.
+Outputs include summary/window/engine/read-path/operation CSVs, summary JSON and
+paper metrics with coverage. `--plot FILE` optionally uses matplotlib.
+
+| Metric | Meaning |
+| --- | --- |
+| `block_ms` | ProcessBlock time including execution/auth/commit; excludes RLP decode, output and periodic sampling/checkpoints. |
+| `import_ms` | InsertChain batch wall time; reported only for complete-batch intervals. |
+| `wall_ms` | Replay wall time including input/output/checkpoints, excluding setup/final audit; requires exact progress boundaries. |
+| Read/write/hash/auth | Potentially overlapping component timers, not an additive wall-time partition or pure SSD latency. Auth root-pass time excludes update-time recovery. |
+| `codec_work_ms`, `no_hash_ms` | Detailed diagnostics; hash-subtracted time additionally requires serial hashing and `auth=none`. |
+| `speedup` | Reference/current time for the selected metric. Paper output uses block time. |
+| `disk_gib` | Logical chaindata file sizes including WAL/manifest/PBSS history; excludes input/results. |
+
+`-measure` serializes trie updates/hashing/auth and records lookup source/time/bytes
+and child histograms. Lookup latency includes earlier cache probes; disk lookups
+may hit OS cache. Histograms count encoding visits, not unique nodes. Payment/call
+classification uses receipt gas == 21000; transaction subtotals and snapshot timers
+can overlap other timers. PBSS HistorySize is included in disk size.
+
+LevelDB detailed schema v3 separates Get, Has, iterator, compaction and other work.
+It counts each SST probe, including overlapping L0 tables, and cache misses even
+with DontFillCache. `ByKind` splits Get into trie/code/other; `ByOperation` sums to
+`AllOperations`. Bloom false positives mean positive probes without a visible key.
+SST read bytes include trailers but exclude WAL/footer/manifest and can hit OS cache.
+Counters are process-wide; use one experimental DB per process. Legacy aggregates
+cannot be corrected retrospectively. Table 3 uses endpoint cumulative counters;
+other performance/read comparisons use interval deltas. LevelDB compaction includes
+flush work, whereas Pebble compaction duration excludes it. Pebble's aggregate cache
+rate cannot substitute for trie-data-block hit rate. SST entry counts, rewrite
+compression, padding and version-wrap results require separate experiments.
+
+Diagnostic helpers: `-block-delay 20ms` adds waits excluded from block time but
+included in import/wall time; `pacing` rows record them. `-cpuprofile FILE` profiles
+replay and marks results diagnostic. `-pprof-port N` exposes localhost-only pprof
+(default off); requested profiles affect timing. `-drop-os-cache` affects the whole
+host and records preparation time outside replay. It resets OS caches, not SSD or
+compaction state; use identical settings on an idle host for comparisons.
+
+---
+
 ## Go Ethereum
+
 
 Golang execution layer implementation of the Ethereum protocol.
 

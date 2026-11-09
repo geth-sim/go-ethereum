@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/holiman/uint256"
@@ -582,7 +583,14 @@ func (s *StateDB) GetTransientState(addr common.Address, key common.Hash) common
 // updateStateObject writes the given object to the trie.
 func (s *StateDB) updateStateObject(obj *stateObject) {
 	// Encode the account and update the account trie
-	if err := s.trie.UpdateAccount(obj.Address(), &obj.data, len(obj.code)); err != nil {
+	var updateErr error
+	if account, ok := s.trie.(*trie.StateTrie); ok && s.db.TrieDB().ReplayConfig().AuthEnabled() && obj.trie != nil {
+		root := obj.trie.(*trie.StateTrie).AuthenticationRoot()
+		updateErr = account.UpdateAccountWithStorageAuth(obj.Address(), &obj.data, &root)
+	} else {
+		updateErr = s.trie.UpdateAccount(obj.Address(), &obj.data, len(obj.code))
+	}
+	if err := updateErr; err != nil {
 		s.setError(fmt.Errorf("updateStateObject (%x) error: %v", obj.Address(), err))
 	}
 	if obj.dirtyCode {
@@ -960,6 +968,9 @@ func (s *StateDB) IntermediateRoot(rules params.Rules) common.Hash {
 		start   = time.Now()
 		workers errgroup.Group
 	)
+	if cfg := s.db.TrieDB().ReplayConfig(); cfg != nil && cfg.Measure {
+		workers.SetLimit(1)
+	}
 	if s.db.Type().Is(TypeUBT) {
 		// Bypass per-account updateTrie() for binary trie. In binary trie mode
 		// there is only one unified trie (OpenStorageTrie returns self), so the
@@ -1159,6 +1170,35 @@ func (s *StateDB) deleteStorage(addrHash common.Hash, root common.Hash) (map[com
 		storages       = make(map[common.Hash]common.Hash) // the set for storage mutations (value is nil)
 		storageOrigins = make(map[common.Hash]common.Hash) // the set for tracking the original value of slot
 	)
+	if cfg := s.db.TrieDB().ReplayConfig(); cfg != nil && !cfg.CanonicalHashing() {
+		// The storage root is a locator, so a canonical StackTrie cannot
+		// reconstruct its root or node blobs. Walk the actual archived trie.
+		tr, err := trie.New(trie.StorageTrieID(s.originalRoot, addrHash, root), s.db.TrieDB())
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		it, err := tr.NodeIterator(nil)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for it.Next(true) {
+			if it.Leaf() {
+				value, rest, err := rlp.SplitString(it.LeafBlob())
+				if err != nil || len(rest) != 0 || len(value) > 32 || len(it.LeafKey()) != 32 || common.BytesToHash(value) == (common.Hash{}) {
+					return nil, nil, nil, fmt.Errorf("invalid research storage leaf at %x", it.Path())
+				}
+				key := common.BytesToHash(it.LeafKey())
+				storages[key], storageOrigins[key] = common.Hash{}, common.BytesToHash(value)
+			} else if it.Hash() != (common.Hash{}) {
+				blob := it.NodeBlob()
+				if err := it.Error(); err != nil {
+					return nil, nil, nil, err
+				}
+				nodes.AddNode(it.Path(), trienode.NewDeletedWithPrev(blob))
+			}
+		}
+		return storages, storageOrigins, nodes, it.Error()
+	}
 	iteratee, err := s.db.Iteratee(s.originalRoot)
 	if err != nil {
 		return nil, nil, nil, err
@@ -1339,6 +1379,9 @@ func (s *StateDB) commit(rules params.Rules, blockNumber uint64) (*StateUpdate, 
 		start   = time.Now()
 		workers errgroup.Group
 	)
+	if cfg := s.db.TrieDB().ReplayConfig(); cfg != nil && cfg.Measure {
+		workers.SetLimit(1) // Commit can call Hash again on already-hashed tries.
+	}
 	// Schedule the account trie first since that will be the biggest, so give
 	// it the most time to crunch.
 	//
@@ -1400,6 +1443,9 @@ func (s *StateDB) commit(rules params.Rules, blockNumber uint64) (*StateUpdate, 
 	storageUpdatedMeter.Mark(s.StorageUpdated.Load())
 	accountDeletedMeter.Mark(int64(s.AccountDeleted))
 	storageDeletedMeter.Mark(s.StorageDeleted.Load())
+	if cfg := s.db.TrieDB().ReplayConfig(); cfg != nil {
+		cfg.Counters().WrittenNodes.Add(uint64(accountTrieNodesUpdated + storageTrieNodesUpdated))
+	}
 	accountTrieUpdatedMeter.Mark(int64(accountTrieNodesUpdated))
 	accountTrieDeletedMeter.Mark(int64(accountTrieNodesDeleted))
 	storageTriesUpdatedMeter.Mark(int64(storageTrieNodesUpdated))
@@ -1585,4 +1631,9 @@ func (s *StateDB) Witness() *stateless.Witness {
 
 func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
+}
+
+// AuthenticationRoot is an experimental commitment, never a DB locator.
+func (s *StateDB) AuthenticationRoot() common.Hash {
+	return s.trie.(*trie.StateTrie).AuthenticationRoot()
 }

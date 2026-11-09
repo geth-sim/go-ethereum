@@ -17,6 +17,7 @@
 package pebble
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -29,6 +30,37 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/dbtest"
 )
+
+func TestMetricsSnapshot(t *testing.T) {
+	engine, err := pebblev2.Open("", &pebblev2.Options{FS: vfsv2.NewMem()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	db := &Database{db: engine}
+	if err := db.Put([]byte("key"), []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	// Put normally uses writeOptions set by New; nil is Pebble's default here.
+	if err := engine.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Get([]byte("key")); err != nil {
+		t.Fatal(err)
+	}
+	first := db.Metrics()
+	second := db.Metrics()
+	if first.Engine.Flush.Count == 0 || second.Engine.Flush.Count < first.Engine.Flush.Count {
+		t.Fatal("snapshot reset a cumulative counter")
+	}
+	get := first.ReadCategories["pebble-get"]
+	if get.BlockBytes == 0 || get.BlockBytesInCache > get.BlockBytes {
+		t.Fatalf("missing/invalid native Get metrics: %+v", get)
+	}
+	if _, err := json.Marshal(first); err != nil {
+		t.Fatalf("engine metrics cannot be recorded as JSON: %v", err)
+	}
+}
 
 func TestPebbleDB(t *testing.T) {
 	t.Run("DatabaseSuite", func(t *testing.T) {

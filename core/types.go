@@ -19,6 +19,7 @@ package core
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -62,5 +63,6 @@ type ProcessResult struct {
 	// pipeline digests the receipts and the access list alongside execution
 	// and validation. It is nil for a result assembled elsewhere, and the
 	// validator computes the receipt digests itself in that case.
-	pipeline *digestPipeline
+	pipeline      *digestPipeline
+	replayTxTimes [2]time.Duration // payment (gas used == 21000), all other transactions
 }

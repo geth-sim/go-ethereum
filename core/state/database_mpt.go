@@ -17,6 +17,8 @@
 package state
 
 import (
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -66,7 +68,11 @@ func (db *MPTDatabase) StateReader(stateRoot common.Hash) (StateReader, error) {
 	if db.TrieDB().Scheme() == rawdb.HashScheme && db.snap != nil {
 		snap := db.snap.Snapshot(stateRoot)
 		if snap != nil {
-			readers = append(readers, newFlatReader(snap))
+			reader := newFlatReader(snap)
+			if replay := db.triedb.ReplayConfig(); replay != nil && replay.Measure {
+				reader.research = replay.Counters()
+			}
+			readers = append(readers, reader)
 		}
 	}
 	// Configure the state reader using the path database in path mode.
@@ -160,6 +166,11 @@ func (db *MPTDatabase) Commit(update *StateUpdate) error {
 
 	// If snapshotting is enabled, update the snapshot tree with this new version
 	if db.snap != nil && db.snap.Snapshot(update.OriginRoot) != nil {
+		var start time.Time
+		replay := db.triedb.ReplayConfig()
+		if replay != nil && replay.Measure {
+			start = time.Now()
+		}
 		if err := db.snap.Update(update.Root, update.OriginRoot, accounts, storages); err != nil {
 			log.Warn("Failed to update snapshot tree", "from", update.OriginRoot, "to", update.Root, "err", err)
 		}
@@ -169,6 +180,9 @@ func (db *MPTDatabase) Commit(update *StateUpdate) error {
 		// - head-127 layer(bottom-most diff layer) is paired with HEAD-127 state
 		if err := db.snap.Cap(update.Root, TriesInMemory); err != nil {
 			log.Warn("Failed to cap snapshot tree", "root", update.Root, "layers", TriesInMemory, "err", err)
+		}
+		if !start.IsZero() {
+			replay.Counters().SnapshotCommits.Add(int64(time.Since(start)))
 		}
 	}
 	return db.triedb.Update(update.Root, update.OriginRoot, update.BlockNumber, update.Nodes, &triedb.StateSet{

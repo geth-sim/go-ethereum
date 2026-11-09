@@ -586,6 +586,9 @@ func (g *Genesis) Commit(db ethdb.Database, triedb *triedb.Database, tracer *tra
 		return nil, err
 	}
 	block := g.toBlockWithRoot(root)
+	if triedb.ReplayConfig() != nil {
+		block = g.ToBlock()
+	}
 
 	// Marshal the genesis state specification and persist.
 	blob, err := json.Marshal(g.Alloc)
@@ -593,6 +596,20 @@ func (g *Genesis) Commit(db ethdb.Database, triedb *triedb.Database, tracer *tra
 		return nil, err
 	}
 	batch := db.NewBatch()
+	if cfg := triedb.ReplayConfig(); cfg != nil {
+		var authRoot *common.Hash
+		if cfg.AuthEnabled() {
+			tr, err := trie.New(trie.StateTrieID(root), triedb)
+			if err != nil {
+				return nil, err
+			}
+			a := tr.AuthenticationRoot()
+			authRoot = &a
+		}
+		if err := writeReplayRoot(batch, block, root, cfg, authRoot); err != nil {
+			return nil, err
+		}
+	}
 	rawdb.WriteGenesisStateSpec(batch, block.Hash(), blob)
 	rawdb.WriteBlock(batch, block)
 	rawdb.WriteReceipts(batch, block.Hash(), block.NumberU64(), nil)

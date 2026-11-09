@@ -79,14 +79,16 @@ func (n *fullNode) EncodeRLP(w io.Writer) error {
 
 // nodeFlag contains caching-related metadata about a node.
 type nodeFlag struct {
-	hash  hashNode // cached hash of the node (may be nil)
-	dirty bool     // whether the node has changes that must be written to the database
+	hash  hashNode  // cached hash of the node (may be nil)
+	auth  *nodeAuth // immutable auth metadata, shared safely by trie copies
+	dirty bool      // whether the node has changes that must be written to the database
 }
 
 func (n nodeFlag) copy() nodeFlag {
 	return nodeFlag{
 		hash:  common.CopyBytes(n.hash),
 		dirty: n.dirty,
+		auth:  n.auth,
 	}
 }
 
@@ -155,6 +157,9 @@ func decodeNode(hash, buf []byte) (node, error) {
 // will be directly referenced by node without bytes deep copy, so the input MUST
 // not be changed after.
 func decodeNodeUnsafe(hash, buf []byte) (node, error) {
+	return decodeNodeUnsafeWithAuth(hash, buf, true)
+}
+func decodeNodeUnsafeWithAuth(hash, buf []byte, recoverAuth bool) (node, error) {
 	if len(buf) == 0 {
 		return nil, io.ErrUnexpectedEOF
 	}
@@ -166,6 +171,8 @@ func decodeNodeUnsafe(hash, buf []byte) (node, error) {
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("invalid node list: %v", err)
+	case c == 3:
+		return decodeAuthenticatedNode(hash, buf, recoverAuth)
 	case c == 2:
 		n, err := decodeShort(hash, elems)
 		return n, wrapError(err, "short")

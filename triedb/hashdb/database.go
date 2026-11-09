@@ -62,6 +62,8 @@ var (
 
 // Config contains the settings for database.
 type Config struct {
+	Research *common.ReplayCounters // optional detailed instrumentation
+
 	CleanCacheSize int // Maximum memory allowance (in bytes) for caching clean nodes
 }
 
@@ -78,6 +80,8 @@ var Defaults = &Config{
 // the disk database. The aim is to accumulate trie writes in-memory and only
 // periodically flush a couple tries to disk, garbage collecting the remainder.
 type Database struct {
+	research *common.ReplayCounters
+
 	diskdb  ethdb.Database              // Persistent storage for matured trie nodes
 	cleans  *fastcache.Cache            // GC friendly memory cache of clean node RLPs
 	dirties map[common.Hash]*cachedNode // Data and references relationships of dirty trie nodes
@@ -133,9 +137,10 @@ func New(diskdb ethdb.Database, config *Config) *Database {
 		cleans = fastcache.New(config.CleanCacheSize)
 	}
 	return &Database{
-		diskdb:  diskdb,
-		cleans:  cleans,
-		dirties: make(map[common.Hash]*cachedNode),
+		diskdb:   diskdb,
+		research: config.Research,
+		cleans:   cleans,
+		dirties:  make(map[common.Hash]*cachedNode),
 	}
 }
 
@@ -173,6 +178,10 @@ func (db *Database) insert(hash common.Hash, node []byte) {
 // node retrieves an encoded cached trie node from memory. If it cannot be found
 // cached, the method queries the persistent database for the content.
 func (db *Database) node(hash common.Hash) ([]byte, error) {
+	var start time.Time
+	if db.research != nil {
+		start = time.Now()
+	}
 	// It doesn't make sense to retrieve the metaroot
 	if hash == (common.Hash{}) {
 		return nil, errors.New("not found")
@@ -180,6 +189,9 @@ func (db *Database) node(hash common.Hash) ([]byte, error) {
 	// Retrieve the node from the clean cache if available
 	if db.cleans != nil {
 		if enc := db.cleans.Get(nil, hash[:]); enc != nil {
+			if db.research != nil {
+				db.research.RecordNodeRead("clean", start, len(enc), 0)
+			}
 			memcacheCleanHitMeter.Mark(1)
 			memcacheCleanReadMeter.Mark(int64(len(enc)))
 			return enc, nil
@@ -194,6 +206,9 @@ func (db *Database) node(hash common.Hash) ([]byte, error) {
 	// The dirty.node field is immutable and safe to read it
 	// even without lock guard.
 	if dirty != nil {
+		if db.research != nil {
+			db.research.RecordNodeRead("dirty", start, len(dirty.node), 0)
+		}
 		memcacheDirtyHitMeter.Mark(1)
 		memcacheDirtyReadMeter.Mark(int64(len(dirty.node)))
 		return dirty.node, nil
@@ -203,12 +218,18 @@ func (db *Database) node(hash common.Hash) ([]byte, error) {
 	// Content unavailable in memory, attempt to retrieve from disk
 	enc := rawdb.ReadLegacyTrieNode(db.diskdb, hash)
 	if len(enc) != 0 {
+		if db.research != nil {
+			db.research.RecordNodeRead("disk", start, len(enc), 0)
+		}
 		if db.cleans != nil {
 			db.cleans.Set(hash[:], enc)
 			memcacheCleanMissMeter.Mark(1)
 			memcacheCleanWriteMeter.Mark(int64(len(enc)))
 		}
 		return enc, nil
+	}
+	if db.research != nil {
+		db.research.RecordNodeRead("missing", start, 0, 0)
 	}
 	return nil, errors.New("not found")
 }

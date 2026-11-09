@@ -58,13 +58,14 @@ type digestPipeline struct {
 
 	// bloomed tells the pipeline that the receipts arrive with their bloom
 	// filter already computed.
-	bloomed bool
+	bloomed      bool
+	hashReceipts bool
 }
 
 // newDigestPipeline starts the pipeline for a block of txs transactions. Set
 // bloomed when the receipts already carry their bloom filter, the pipeline then
 // uses it rather than hashing the logs again.
-func newDigestPipeline(txs int, bloomed bool) *digestPipeline {
+func newDigestPipeline(txs int, bloomed, hashReceipts bool) *digestPipeline {
 	p := &digestPipeline{
 		receipts: stage[*types.Receipt, receiptDigest]{
 			in:   make(chan *types.Receipt, txs),
@@ -74,7 +75,8 @@ func newDigestPipeline(txs int, bloomed bool) *digestPipeline {
 			in:   make(chan *bal.ConstructionBlockAccessList, 1),
 			done: make(chan struct{}),
 		},
-		bloomed: bloomed,
+		bloomed:      bloomed,
+		hashReceipts: hashReceipts,
 	}
 	go p.run(txs)
 	return p
@@ -85,9 +87,13 @@ func newDigestPipeline(txs int, bloomed bool) *digestPipeline {
 func (p *digestPipeline) run(txs int) {
 	var (
 		bloom    types.Bloom
-		receipts = make(types.Receipts, 0, txs)
-		stream   = types.NewListHashStream(trie.NewStackTrie(nil))
+		receipts types.Receipts
+		stream   *types.ListHashStream
 	)
+	if p.hashReceipts {
+		receipts = make(types.Receipts, 0, txs)
+		stream = types.NewListHashStream(trie.NewStackTrie(nil))
+	}
 	for range txs {
 		// The input closes early only when the block was abandoned, nobody
 		// reads the digest then.
@@ -101,12 +107,14 @@ func (p *digestPipeline) run(txs int) {
 		if len(receipt.Logs) != 0 {
 			bitutil.ORBytes(bloom[:], bloom[:], receipt.Bloom[:])
 		}
-		receipts = append(receipts, receipt)
-		stream.Update(receipts)
+		if stream != nil {
+			receipts = append(receipts, receipt)
+			stream.Update(receipts)
+		}
 	}
-	p.receipts.out = receiptDigest{
-		bloom: bloom,
-		root:  stream.Hash(),
+	p.receipts.out.bloom = bloom
+	if stream != nil {
+		p.receipts.out.root = stream.Hash()
 	}
 	close(p.receipts.done)
 
@@ -169,7 +177,10 @@ func (r *ProcessResult) blockBloom() types.Bloom {
 // none did.
 func (r *ProcessResult) receiptRoot() common.Hash {
 	if r.pipeline != nil {
-		return r.pipeline.joinReceipts().root
+		digest := r.pipeline.joinReceipts()
+		if r.pipeline.hashReceipts {
+			return digest.root
+		}
 	}
 	return types.DeriveSha(r.Receipts, trie.NewStackTrie(nil))
 }

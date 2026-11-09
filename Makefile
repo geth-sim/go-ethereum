@@ -2,7 +2,7 @@
 # with Go source code. If you know what GOPATH is then you probably
 # don't need to bother with make.
 
-.PHONY: geth evm all test lint fmt clean devtools help
+.PHONY: geth evm statesim statesim-measure all test lint fmt clean devtools help
 
 GOBIN = ./build/bin
 GO ?= latest
@@ -19,6 +19,32 @@ evm:
 	$(GORUN) build/ci.go install ./cmd/evm
 	@echo "Done building."
 	@echo "Run \"$(GOBIN)/evm\" to launch evm."
+
+# Optional native authentication backend: STATESIM_TAGS=gls254.
+STATESIM_TAGS ?=
+DB_ENGINE ?= leveldb
+DB_SOURCE ?=
+
+#? statesim: Build replay with upstream databases pinned in go.mod.
+statesim:
+	GOWORK=off go build -tags '$(STATESIM_TAGS)' -o $(GOBIN)/statesim ./cmd/statesim
+
+#? statesim-measure: Build with DB_ENGINE=leveldb|pebble and DB_SOURCE=module@branch-or-commit (or local checkout).
+statesim-measure:
+	@set -eu; \
+	case '$(DB_ENGINE)' in \
+	  leveldb) module=github.com/syndtr/goleveldb ;; \
+	  pebble) module=github.com/cockroachdb/pebble/v2 ;; \
+	  *) echo 'DB_ENGINE must be leveldb or pebble' >&2; exit 1 ;; \
+	esac; \
+	test -n '$(DB_SOURCE)' || { echo 'Set DB_SOURCE to an instrumentation module@branch-or-commit or local checkout' >&2; exit 1; }; \
+	mkdir -p build/cache; \
+	tmp=$$(mktemp -d "$$PWD/build/cache/statesim-mod.XXXXXX"); \
+	trap 'rm -rf "$$tmp"' EXIT HUP INT TERM; \
+	cp go.mod "$$tmp/go.mod"; cp go.sum "$$tmp/go.sum"; \
+	GOWORK=off go mod edit -modfile="$$tmp/go.mod" -replace="$$module=$(DB_SOURCE)"; \
+	GOWORK=off go build -mod=mod -modfile="$$tmp/go.mod" -tags '$(STATESIM_TAGS)' \
+	  -o $(GOBIN)/statesim-$(DB_ENGINE)-measure ./cmd/statesim
 
 #? all: Build all packages and executables.
 all:

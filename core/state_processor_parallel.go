@@ -232,7 +232,7 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		// The receipts are digested on a pipeline of their own, fed by the
 		// gather as each transaction's turn comes up. Their blooms are hashed
 		// already, the workers do that as they execute.
-		pipeline = newDigestPipeline(len(txs), true)
+		pipeline = newDigestPipeline(len(txs), true, true)
 	)
 	// Run out the pipeline on the paths that abandon the block half way through.
 	defer pipeline.abandon()

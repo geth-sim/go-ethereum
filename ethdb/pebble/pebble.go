@@ -29,6 +29,7 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/bloom"
+	"github.com/cockroachdb/pebble/v2/sstable/block"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
@@ -179,6 +180,17 @@ func (l panicLogger) Fatalf(format string, args ...interface{}) {
 // New returns a wrapped pebble DB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
 func New(file string, cache int, handles int, namespace string, readonly bool) (*Database, error) {
+	return NewWithCompression(file, cache, handles, namespace, readonly, "")
+}
+
+// NewWithCompression preserves Geth's engine settings, overriding only SST
+// compression for research runs. An empty name keeps the native defaults.
+func NewWithCompression(file string, cache int, handles int, namespace string, readonly bool, compression string) (*Database, error) {
+	profiles := map[string]*block.CompressionProfile{"snappy": block.SnappyCompression, "none": block.NoCompression, "zstd": block.ZstdCompression}
+	profile := profiles[compression]
+	if compression != "" && profile == nil {
+		return nil, fmt.Errorf("unsupported Pebble compression %q", compression)
+	}
 	// Ensure we have some minimal caching and file guarantees
 	if cache < minCache {
 		cache = minCache
@@ -349,6 +361,11 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	opt.Experimental.CompactionDebtConcurrency = 1 << 28 // 256MB
 
 	// Open the db and recover any potential corruptions
+	if profile != nil {
+		opt.ApplyCompressionSettings(func() pebble.DBCompressionSettings {
+			return pebble.UniformDBCompressionSettings(profile)
+		})
+	}
 	innerDB, err := pebble.Open(file, opt)
 	if err != nil {
 		return nil, err
@@ -519,6 +536,31 @@ func upperBound(prefix []byte) (limit []byte) {
 // method to read everything there is to read, independent of Pebble version.
 func (d *Database) Stat() (string, error) {
 	return d.db.Metrics().String(), nil
+}
+
+// Metrics contains existing engine and event counters. Durations are nanoseconds;
+// counters restart on database open. Sampling does not enable tracing or flush DB.
+type Metrics struct {
+	Engine               *pebble.Metrics
+	ReadCategories       map[string]block.CategoryStats
+	CompactionActiveTime time.Duration
+	Level0Compactions    uint32
+	NonLevel0Compactions uint32
+	WriteStalls          int64
+	WriteStallTime       time.Duration
+}
+
+func (d *Database) Metrics() Metrics {
+	engine := d.db.Metrics()
+	categories := make(map[string]block.CategoryStats, len(engine.CategoryStats))
+	for _, stats := range engine.CategoryStats {
+		categories[stats.Category.String()] = stats.CategoryStats
+	}
+	return Metrics{
+		Engine: engine, ReadCategories: categories, CompactionActiveTime: time.Duration(d.compTime.Load()),
+		Level0Compactions: d.level0Comp.Load(), NonLevel0Compactions: d.nonLevel0Comp.Load(),
+		WriteStalls: d.writeDelayCount.Load(), WriteStallTime: time.Duration(d.writeDelayTime.Load()),
+	}
 }
 
 // Compact flattens the underlying data store for the given key range. In essence,

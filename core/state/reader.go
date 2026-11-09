@@ -20,6 +20,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/overlay"
@@ -83,7 +84,8 @@ type Reader interface {
 
 // flatReader wraps a database state reader and is safe for concurrent access.
 type flatReader struct {
-	reader database.StateReader
+	research *common.ReplayCounters // standalone snapshot only, detailed replay mode
+	reader   database.StateReader
 }
 
 // newFlatReader constructs a state reader with on the given state root.
@@ -98,6 +100,13 @@ func newFlatReader(reader database.StateReader) *flatReader {
 //
 // The returned account might be nil if it's not existent.
 func (r *flatReader) Account(addr common.Address) (*types.StateAccount, error) {
+	if r.research != nil {
+		start := time.Now()
+		defer func() {
+			r.research.SnapshotAccountReads.Add(int64(time.Since(start)))
+			r.research.SnapshotAccountLookups.Add(1)
+		}()
+	}
 	account, err := r.reader.Account(crypto.Keccak256Hash(addr[:]))
 	if err != nil {
 		return nil, err
@@ -128,6 +137,13 @@ func (r *flatReader) Account(addr common.Address) (*types.StateAccount, error) {
 //
 // The returned storage slot might be empty if it's not existent.
 func (r *flatReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
+	if r.research != nil {
+		start := time.Now()
+		defer func() {
+			r.research.SnapshotStorageReads.Add(int64(time.Since(start)))
+			r.research.SnapshotStorageLookups.Add(1)
+		}()
+	}
 	addrHash := crypto.Keccak256Hash(addr[:])
 	slotHash := crypto.Keccak256Hash(key[:])
 	ret, err := r.reader.Storage(addrHash, slotHash)

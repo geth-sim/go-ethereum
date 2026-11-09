@@ -92,6 +92,8 @@ var ReadOnly = &Config{
 
 // Config contains the settings for database.
 type Config struct {
+	Research *common.ReplayCounters // optional detailed replay node lookups
+
 	TrieCleanSize    int    // Maximum memory allowance (in bytes) for caching clean trie data
 	StateCleanSize   int    // Maximum memory allowance (in bytes) for caching clean state data
 	WriteBufferSize  int    // Maximum memory allowance (in bytes) for write buffer

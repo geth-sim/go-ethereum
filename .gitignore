@@ -57,3 +57,8 @@ cmd/geth/geth
 cmd/rlpdump/rlpdump
 cmd/workload/workload
 cmd/keeper/keeper
+
+# Local state replay outputs
+cmd/statesim/statesim
+__pycache__/
+/papers/

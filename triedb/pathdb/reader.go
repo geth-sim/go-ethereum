@@ -63,8 +63,21 @@ type reader struct {
 // Node implements database.NodeReader interface, retrieving the node with specified
 // node info. Don't modify the returned byte slice since it's not deep-copied
 // and still be referenced by database.
-func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte, error) {
-	blob, got, loc, err := r.layer.node(owner, path, 0)
+func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) (blob []byte, err error) {
+	var start time.Time
+	var loc nodeLoc
+	if m := r.db.config.Research; m != nil {
+		start = time.Now()
+		defer func() {
+			location := loc.loc
+			if err != nil || len(blob) == 0 {
+				location = "missing"
+			}
+			m.RecordNodeRead(location, start, len(blob), loc.depth)
+		}()
+	}
+	var got common.Hash
+	blob, got, loc, err = r.layer.node(owner, path, 0)
 	if err != nil {
 		return nil, err
 	}
